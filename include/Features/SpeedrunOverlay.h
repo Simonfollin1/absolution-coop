@@ -16,9 +16,11 @@ public:
     // Called by SpeedrunToolkit when the player entity is available each frame.
     void SetPlayerPosition(const float4& pos) { m_currentPos = pos; m_hasPlayerPos = true; }
 
+    // Rendered inside the parent window's "Overlay" tab.
+    void RenderSettingsPanel();
+
 private:
     void RenderOverlayWindow();
-    void RenderSettingsPanel();
 
     static void FormatTime(double seconds, char* buf, size_t bufSize);
 

@@ -1,6 +1,6 @@
-#include "SpeedrunToolkit.h"
-
 #include <imgui.h>
+
+#include "SpeedrunToolkit.h"
 
 #include <Glacier/ZGameLoopManager.h>
 #include <Glacier/ZLevelManager.h>
