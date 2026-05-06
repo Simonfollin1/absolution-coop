@@ -1,0 +1,86 @@
+name: Build
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*.*.*"]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout SpeedrunToolkit
+        uses: actions/checkout@v4
+        with:
+          path: mod
+
+      - name: Clone HitmanAbsolutionSDK
+        run: git clone --depth 1 https://github.com/pavledev/HitmanAbsolutionSDK.git sdk
+
+      - name: Place mod into SDK
+        shell: pwsh
+        run: Copy-Item -Recurse mod sdk/Mods/SpeedrunToolkit
+
+      - name: Add SpeedrunToolkit to SDK MODS list
+        shell: pwsh
+        run: |
+          $path = "sdk/CMakeLists.txt"
+          $txt  = Get-Content $path -Raw
+          $txt  = $txt -replace '(set\(MODS\s*\r?\n)', "`$1    SpeedrunToolkit`n"
+          Set-Content $path $txt -NoNewline
+
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          cd sdk
+          if (-not (Test-Path "vcpkg/vcpkg.exe")) {
+            git clone --depth 1 https://github.com/microsoft/vcpkg.git vcpkg
+            .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+          }
+
+      - name: Configure CMake (x86 / Win32)
+        shell: pwsh
+        run: |
+          cmake -S sdk -B build `
+            -G "Visual Studio 17 2022" -A Win32 `
+            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/sdk/vcpkg/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x86-windows
+
+      - name: Build SpeedrunToolkit
+        run: cmake --build build --config Release --target SpeedrunToolkit
+
+      - name: Locate built DLL
+        id: find_dll
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem -Recurse -Filter "SpeedrunToolkit.dll" build | Select-Object -First 1
+          echo "path=$($dll.FullName)" >> $env:GITHUB_OUTPUT
+          echo "Found: $($dll.FullName)"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpeedrunToolkit-${{ github.sha }}
+          path: ${{ steps.find_dll.outputs.path }}
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.find_dll.outputs.path }}
+          body: |
+            ## Installera
+
+            1. Ladda ner `SpeedrunToolkit.dll` från denna release.
+            2. Ladda ner **HitmanAbsolutionSDK** (dinput8.dll + dinput8_original.dll) från
+               https://github.com/pavledev/HitmanAbsolutionSDK/releases
+            3. Kopiera `dinput8.dll` och `dinput8_original.dll` till spelets rotmapp
+               (där `HitmanAbsolution.exe` ligger).
+            4. Skapa mappen `mods/` i spelets rotmapp om den inte finns.
+            5. Kopiera `SpeedrunToolkit.dll` till `mods/`.
+            6. Öppna (eller skapa) `mods/mods.ini` och lägg till `SpeedrunToolkit` på en egen rad.
+            7. Starta spelet. Tryck `~` för SDK-panelen, sedan `L` för Speedrun Toolkit.
+
+            Se INSTALL.md i repot för fullständig guide.
