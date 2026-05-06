@@ -38,15 +38,19 @@ private:
     float  m_speed             = 0.f;
 
     // Display config
-    bool m_overlayVisible      = true;
-    bool m_showTimer           = true;
-    bool m_showPosition        = true;
-    bool m_showSpeed           = true;
-    bool m_showChapter         = true;
+    bool m_overlayVisible       = true;
+    bool m_showTimer            = true;
+    bool m_showPosition         = true;
+    bool m_showSpeed            = true;
+    bool m_showChapter          = true;
     bool m_showLoadingIndicator = true;
-    bool m_autoPauseDuringLoad = true;
+    bool m_autoPauseDuringLoad  = true;
 
-    // Keybinds
+    // Keybinds (names registered by SpeedrunToolkit::OnEngineInitialized)
     ZInputAction m_timerStartStopAction;
     ZInputAction m_timerResetAction;
+
+    // Rising-edge state for one-shot key detection
+    bool m_prevStartStop = false;
+    bool m_prevReset     = false;
 };

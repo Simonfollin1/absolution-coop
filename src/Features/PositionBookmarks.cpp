@@ -12,14 +12,13 @@
 
 void PositionBookmarks::OnEngineInitialized()
 {
-    // Default: Numpad1-5 teleports to slot 1-5.
-    // Override via mods.ini with key "SRT_Teleport1" etc.
-    const char* defaultKeys[SLOT_COUNT] = { "Numpad1","Numpad2","Numpad3","Numpad4","Numpad5" };
+    // Bindings were already registered by SpeedrunToolkit::OnEngineInitialized.
+    // Default keys: Numpad1-5.
     for (int i = 0; i < SLOT_COUNT; ++i)
     {
         char actionName[32];
         std::snprintf(actionName, sizeof(actionName), "SRT_Teleport%d", i + 1);
-        m_teleportActions[i] = ZInputAction(GenerateBindingExpression(actionName, defaultKeys[i]));
+        m_teleportActions[i] = ZInputAction(actionName);
     }
 }
 
@@ -38,10 +37,13 @@ void PositionBookmarks::OnFrameUpdate(const SGameUpdateEvent& /*updateEvent*/)
         m_lastSection = section;
     }
 
+    // Rising-edge detection for one-shot teleport.
     for (int i = 0; i < SLOT_COUNT; ++i)
     {
-        if (m_teleportActions[i].IsTriggered())
+        const bool down = m_teleportActions[i].Digital();
+        if (down && !m_prevTeleport[i])
             TeleportToSlot(i);
+        m_prevTeleport[i] = down;
     }
 }
 
@@ -65,7 +67,7 @@ void PositionBookmarks::TeleportToSlot(int slot)
 
 void PositionBookmarks::RenderTab()
 {
-    ImGui::TextDisabled("Teleport keys: Numpad1-5 (configurable in mods.ini)");
+    ImGui::TextDisabled("Teleport keys: Numpad1-5");
     ImGui::Spacing();
 
     for (int i = 0; i < SLOT_COUNT; ++i)
@@ -110,7 +112,7 @@ void PositionBookmarks::RenderTab()
     }
 }
 
-// ---- Serialisation (simple key=value text, no external deps) ----
+// ---- Serialisation ----
 
 std::string PositionBookmarks::BuildFilePath(int level, int section)
 {

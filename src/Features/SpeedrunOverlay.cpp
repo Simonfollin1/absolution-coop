@@ -8,8 +8,9 @@
 
 void SpeedrunOverlay::OnEngineInitialized()
 {
-    m_timerStartStopAction = ZInputAction(GenerateBindingExpression("SRT_TimerStartStop", "F1"));
-    m_timerResetAction     = ZInputAction(GenerateBindingExpression("SRT_TimerReset",     "F2"));
+    // Bindings were already registered by SpeedrunToolkit::OnEngineInitialized.
+    m_timerStartStopAction = ZInputAction("SRT_TimerStartStop");
+    m_timerResetAction     = ZInputAction("SRT_TimerReset");
 
     auto now = std::chrono::steady_clock::now();
     m_segmentStart  = now;
@@ -24,18 +25,23 @@ void SpeedrunOverlay::OnFrameUpdate(const SGameUpdateEvent& /*updateEvent*/)
     double frameDelta = std::chrono::duration<double>(now - m_lastFrameTime).count();
     m_lastFrameTime = now;
 
-    if (m_timerStartStopAction.IsTriggered())
+    // Rising-edge detection for one-shot actions.
+    const bool startStopDown = m_timerStartStopAction.Digital();
+    const bool resetDown     = m_timerResetAction.Digital();
+
+    if (startStopDown && !m_prevStartStop)
     {
         m_timerRunning = !m_timerRunning;
         if (m_timerRunning)
             m_segmentStart = now;
     }
-
-    if (m_timerResetAction.IsTriggered())
+    if (resetDown && !m_prevReset)
     {
         m_timerRunning    = false;
         m_accumulatedSecs = 0.0;
     }
+    m_prevStartStop = startStopDown;
+    m_prevReset     = resetDown;
 
     // Accumulate time, skipping loading screens when auto-pause is enabled.
     if (m_timerRunning && !(m_autoPauseDuringLoad && isLoading))
@@ -137,7 +143,7 @@ void SpeedrunOverlay::RenderSettingsPanel()
     ImGui::Checkbox("Auto-pause during loads", &m_autoPauseDuringLoad);
 
     ImGui::SeparatorText("Timer controls");
-    ImGui::Text("Start / Stop:  F1  (configurable in mods.ini)");
+    ImGui::Text("Start / Stop:  F1");
     ImGui::Text("Reset:         F2");
 
     ImGui::Spacing();

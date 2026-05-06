@@ -30,7 +30,8 @@ private:
     PositionBookmarks     m_bookmarks;
     TriggerZoneVisualizer m_triggerViz;
 
-    bool         m_isOpen = false;
+    bool         m_isOpen     = false;
+    bool         m_prevToggle = false;
     ZInputAction m_toggleAction;
 };
 

@@ -8,6 +8,7 @@
 #include <Glacier/Render/IRenderDestinationEntity.h>
 #include <Glacier/Render/ZSpatialEntity.h>
 #include <Glacier/Camera/ZCameraEntity.h>
+#include <Glacier/Input/ZInputActionManager.h>
 #include <Glacier/Templates/TEntityRef.h>
 
 SpeedrunToolkit::SpeedrunToolkit() = default;
@@ -32,7 +33,21 @@ void SpeedrunToolkit::OnEngineInitialized()
         delegate(this, &SpeedrunToolkit::OnFrameUpdate);
     GameLoopManager->RegisterForFrameUpdate(delegate, 1);
 
-    m_toggleAction = ZInputAction(GenerateBindingExpression("SRT_Toggle", "L"));
+    // Build and register all binding expressions.
+    // GenerateBindingExpression is a protected ModInterface helper that formats
+    // the expression; InputActionManager registers it with the engine.
+    std::string bindings;
+    bindings += GenerateBindingExpression("SRT_Toggle",         "l");
+    bindings += GenerateBindingExpression("SRT_TimerStartStop", "f1");
+    bindings += GenerateBindingExpression("SRT_TimerReset",     "f2");
+    bindings += GenerateBindingExpression("SRT_Teleport1",      "numpad1");
+    bindings += GenerateBindingExpression("SRT_Teleport2",      "numpad2");
+    bindings += GenerateBindingExpression("SRT_Teleport3",      "numpad3");
+    bindings += GenerateBindingExpression("SRT_Teleport4",      "numpad4");
+    bindings += GenerateBindingExpression("SRT_Teleport5",      "numpad5");
+    InputActionManager->AddBindings(bindings.c_str());
+
+    m_toggleAction = ZInputAction("SRT_Toggle");
 
     m_overlay.OnEngineInitialized();
     m_bookmarks.OnEngineInitialized();
@@ -41,12 +56,12 @@ void SpeedrunToolkit::OnEngineInitialized()
 
 void SpeedrunToolkit::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
 {
-    if (m_toggleAction.IsTriggered())
+    const bool toggleDown = m_toggleAction.Digital();
+    if (toggleDown && !m_prevToggle)
         m_isOpen = !m_isOpen;
+    m_prevToggle = toggleDown;
 
-    // Resolve player ZSpatialEntity via the same pattern as FreeCamera::TeleportMainCharacter:
-    //   const TEntityRef<ZHitman5>& hitman = LevelManager->GetHitman();
-    //   ZSpatialEntity* spatial = hitman.GetEntityRef().QueryInterfacePtr<ZSpatialEntity>();
+    // Resolve player ZSpatialEntity.
     ZSpatialEntity* pPlayerSpatial = nullptr;
     {
         const auto& hitmanRef = LevelManager->GetHitman();
@@ -54,14 +69,14 @@ void SpeedrunToolkit::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
             pPlayerSpatial = hitmanRef.GetEntityRef().QueryInterfacePtr<ZSpatialEntity>();
     }
 
-    // Resolve the active render camera for world-to-screen projection.
+    // Resolve the active render camera.
     ZCameraEntity* pCamera = nullptr;
     {
         auto renderDest = RenderManager->GetGameRenderDestinationEntity();
         if (renderDest.GetRawPointer())
         {
-            auto camRef = renderDest.GetRawPointer()->GetSource();
-            pCamera = camRef.GetRawPointer();
+            const ZEntityRef& camEntityRef = renderDest.GetRawPointer()->GetSource();
+            pCamera = camEntityRef.QueryInterfacePtr<ZCameraEntity>();
         }
     }
 

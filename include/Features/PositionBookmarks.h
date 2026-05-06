@@ -10,8 +10,6 @@
 
 class ZSpatialEntity;
 
-// One saved position slot: player transform.
-// NPC snapshots are planned but require actor enumeration (TODO).
 struct Bookmark
 {
     float4  playerPosition{};
@@ -44,6 +42,9 @@ private:
 
     std::array<Bookmark, SLOT_COUNT>     m_slots{};
     std::array<ZInputAction, SLOT_COUNT> m_teleportActions;
+
+    // Rising-edge state for one-shot teleport key detection
+    bool m_prevTeleport[SLOT_COUNT] = {};
 
     ZSpatialEntity* m_pPlayerSpatial = nullptr;
 
