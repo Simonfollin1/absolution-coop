@@ -31,6 +31,16 @@ jobs:
           $txt  = $txt -replace '(set\(MODS\s*\r?\n)', "`$1    SpeedrunToolkit`n"
           Set-Content $path $txt -NoNewline
 
+      - name: Patch SDK Logger.cpp (missing chrono include for MSVC 19.44+)
+        shell: pwsh
+        run: |
+          $path = "sdk/HitmanAbsolutionSDK/src/Logger.cpp"
+          $txt  = Get-Content $path -Raw
+          if (-not ($txt -match '#include <chrono>')) {
+            $txt = "#include <chrono>`n" + $txt
+            Set-Content $path $txt -NoNewline
+          }
+
       - name: Bootstrap vcpkg
         shell: pwsh
         run: |
