@@ -34,11 +34,8 @@ jobs:
       - name: Bootstrap vcpkg
         shell: pwsh
         run: |
-          cd sdk
-          if (-not (Test-Path "vcpkg/vcpkg.exe")) {
-            git clone --depth 1 https://github.com/microsoft/vcpkg.git vcpkg
-            .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
-          }
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git sdk/vcpkg
+          .\sdk\vcpkg\bootstrap-vcpkg.bat -disableMetrics
 
       - name: Configure CMake (x86 / Win32)
         shell: pwsh
@@ -48,39 +45,76 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/sdk/vcpkg/scripts/buildsystems/vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x86-windows
 
-      - name: Build SpeedrunToolkit
-        run: cmake --build build --config Release --target SpeedrunToolkit
+      # Build the proxy loader (becomes dinput8.dll) and our mod.
+      - name: Build DirectInputProxy + SpeedrunToolkit
+        run: cmake --build build --config Release --target DirectInputProxy SpeedrunToolkit
 
-      - name: Locate built DLL
-        id: find_dll
+      # ---- Package everything the user needs ----
+
+      - name: Assemble release package
         shell: pwsh
         run: |
-          $dll = Get-ChildItem -Recurse -Filter "SpeedrunToolkit.dll" build | Select-Object -First 1
-          echo "path=$($dll.FullName)" >> $env:GITHUB_OUTPUT
-          echo "Found: $($dll.FullName)"
+          $pkg = "package"
+          New-Item -ItemType Directory -Force $pkg | Out-Null
+          New-Item -ItemType Directory -Force "$pkg/mods" | Out-Null
+
+          # dinput8.dll — the proxy loader built from DirectInputProxy.
+          # The SDK's CMakeLists names the output dinput8.dll.
+          $proxy = Get-ChildItem -Recurse -Filter "dinput8.dll" build | Select-Object -First 1
+          if (-not $proxy) {
+            # Fallback: find by project name if output name differs.
+            $proxy = Get-ChildItem -Recurse -Filter "DirectInputProxy.dll" build | Select-Object -First 1
+            if ($proxy) { Copy-Item $proxy.FullName "$pkg/dinput8.dll" }
+          } else {
+            Copy-Item $proxy.FullName "$pkg/dinput8.dll"
+          }
+
+          # dinput8_original.dll — the real Windows DirectInput DLL (32-bit).
+          # SysWOW64 holds 32-bit DLLs on 64-bit Windows.
+          Copy-Item "C:\Windows\SysWOW64\dinput8.dll" "$pkg/dinput8_original.dll"
+
+          # SpeedrunToolkit.dll
+          $mod = Get-ChildItem -Recurse -Filter "SpeedrunToolkit.dll" build | Select-Object -First 1
+          Copy-Item $mod.FullName "$pkg/mods/SpeedrunToolkit.dll"
+
+          # mods.ini — tells the loader which mods to enable.
+          Set-Content "$pkg/mods/mods.ini" "SpeedrunToolkit"
+
+          # List what we packaged.
+          Get-ChildItem -Recurse $pkg
+
+      - name: Zip package
+        shell: pwsh
+        run: Compress-Archive -Path package/* -DestinationPath SpeedrunToolkit.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: SpeedrunToolkit-${{ github.sha }}
-          path: ${{ steps.find_dll.outputs.path }}
+          path: SpeedrunToolkit.zip
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ steps.find_dll.outputs.path }}
+          files: SpeedrunToolkit.zip
           body: |
-            ## Installera
+            ## Installation — extrahera och spela
 
-            1. Ladda ner `SpeedrunToolkit.dll` från denna release.
-            2. Ladda ner **HitmanAbsolutionSDK** (dinput8.dll + dinput8_original.dll) från
-               https://github.com/pavledev/HitmanAbsolutionSDK/releases
-            3. Kopiera `dinput8.dll` och `dinput8_original.dll` till spelets rotmapp
-               (där `HitmanAbsolution.exe` ligger).
-            4. Skapa mappen `mods/` i spelets rotmapp om den inte finns.
-            5. Kopiera `SpeedrunToolkit.dll` till `mods/`.
-            6. Öppna (eller skapa) `mods/mods.ini` och lägg till `SpeedrunToolkit` på en egen rad.
-            7. Starta spelet. Tryck `~` för SDK-panelen, sedan `L` för Speedrun Toolkit.
+            1. Ladda ner `SpeedrunToolkit.zip` nedan.
+            2. Hitta Hitman Absolutions spelkatalog i Steam:
+               högerklicka på spelet → Hantera → Bläddra bland lokala filer.
+            3. Extrahera **innehållet** i zip-filen direkt till spelkatalogen
+               (inte zip-filen i sig — innehållet).
 
-            Se INSTALL.md i repot för fullständig guide.
+            Klart. Starta spelet, tryck **`~`** för att öppna SDK-panelen,
+            sedan **`L`** för Speedrun Toolkit.
+
+            ---
+            Paketet innehåller:
+            - `dinput8.dll` — mod-loadern
+            - `dinput8_original.dll` — originalt DirectInput (32-bit Windows)
+            - `mods/SpeedrunToolkit.dll` — Speedrun Toolkit
+            - `mods/mods.ini` — konfiguration
+
+            Se [INSTALL.md](INSTALL.md) för fullständig guide och tangentbordslayout.

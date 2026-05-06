@@ -1,87 +1,38 @@
 # Speedrun Toolkit – Installation
 
-## Alternativ A: Ladda ner färdig DLL (rekommenderat)
+## Ladda ner och spela (rekommenderat)
 
 ### Krav
-- Hitman Absolution (Steam-versionen)
+- Hitman Absolution (Steam-versionen, PC)
 - Windows
 
 ### Steg
 
-**1. Ladda ner HitmanAbsolutionSDK-loadern**
+**1. Ladda ner `SpeedrunToolkit.zip`**
 
-Gå till https://github.com/pavledev/HitmanAbsolutionSDK/releases och ladda ner den senaste releasen.
-Du behöver dessa filer:
-- `dinput8.dll`
-- `dinput8_original.dll`
+Gå till [Releases](../../releases) och ladda ner `SpeedrunToolkit.zip` från den senaste releasen.
 
-**2. Ladda ner SpeedrunToolkit.dll**
+**2. Hitta spelkatalogen**
 
-Gå till [Releases](../../releases) i detta repo och ladda ner `SpeedrunToolkit.dll` från den senaste releasen.
+Öppna Steam → högerklicka på Hitman Absolution → Hantera → Bläddra bland lokala filer.
 
-**3. Kopiera filerna till spelet**
+**3. Extrahera zip-filen till spelkatalogen**
 
-Hitta Hitman Absolutions spelkatalog (högerklicka på spelet i Steam → Hantera → Bläddra bland lokala filer).
+Extrahera **innehållet** i zip-filen direkt till spelkatalogen (inte zip-filen i sig).
+Efter extraktion ska det se ut så här:
 
-Kopiera dit:
 ```
 HitmanAbsolution.exe          ← redan här
-dinput8.dll                   ← från SDK-releasen
-dinput8_original.dll          ← från SDK-releasen
+dinput8.dll                   ← från zip-filen
+dinput8_original.dll          ← från zip-filen
 mods/
-  SpeedrunToolkit.dll         ← från detta repo
-  mods.ini                    ← skapa denna fil
+  SpeedrunToolkit.dll         ← från zip-filen
+  mods.ini                    ← från zip-filen
 ```
 
-**4. Skapa mods.ini**
+**4. Starta spelet**
 
-Skapa filen `mods/mods.ini` med följande innehåll:
-```
-SpeedrunToolkit
-```
-
-**5. Starta spelet**
-
-Starta Hitman Absolution via Steam. När du är inne i spelet:
-- Tryck **`~`** (tilde) för att öppna SDK-panelen
-- Tryck **`L`** för att öppna/stänga Speedrun Toolkit-fönstret
-
----
-
-## Alternativ B: Bygg från källkod
-
-### Krav
-- Visual Studio 2022 med C++-komponenten
-- CMake 3.8+
-- Git
-
-### Steg
-
-```bat
-git clone https://github.com/pavledev/HitmanAbsolutionSDK.git
-git clone <detta-repo> HitmanAbsolutionSDK/Mods/SpeedrunToolkit
-```
-
-Öppna `HitmanAbsolutionSDK/CMakeLists.txt` och lägg till `SpeedrunToolkit` i MODS-listan:
-```cmake
-set(MODS
-    SpeedrunToolkit   # lägg till denna rad
-    FreeCamera
-    ...
-)
-```
-
-Bygg:
-```bat
-cd HitmanAbsolutionSDK
-cmake -B build -G "Visual Studio 17 2022" -A Win32 ^
-  -DCMAKE_TOOLCHAIN_FILE=vcpkg/scripts/buildsystems/vcpkg.cmake ^
-  -DVCPKG_TARGET_TRIPLET=x86-windows
-cmake --build build --config Release --target SpeedrunToolkit
-```
-
-Den färdiga DLL:en hamnar i `build/.../Release/SpeedrunToolkit.dll`.
-Följ sedan installationsstegen från Alternativ A.
+Starta Hitman Absolution via Steam. Tryck **`~`** (tilde) för att öppna SDK-panelen, sedan **`L`** för att öppna Speedrun Toolkit.
 
 ---
 
@@ -91,16 +42,56 @@ Följ sedan installationsstegen från Alternativ A.
 |---------|----------|
 | `~` | Öppna/stäng SDK-panel |
 | `L` | Öppna/stäng Speedrun Toolkit |
-| `Numpad1–5` | Teleportera till bookmark-slot 1–5 |
 | `F1` | Starta/stoppa segment-timer |
 | `F2` | Nollställ segment-timer |
+| `Numpad1–5` | Teleportera till bookmark-slot 1–5 |
 
-Alla tangenter kan konfigureras om i `mods/mods.ini`.
+Alla tangenter kan konfigureras i `mods/mods.ini`.
 
-### Bookmarks och NPC:er
+### Bookmarks och NPC-positioner
 
-När du sparar en bookmark sparas både din position och alla NPC:ers positioner vid den tidpunkten. Vid teleport återställs spelaren och NPC:erna till sina sparade positioner. **NPC-beteende, alert-nivå och scripted events återställs inte** — det är en motorteknisk begränsning, inte en bugg.
+Varje bookmark sparar din position och alla synliga NPC:ers positioner vid det tillfället.
+Vid teleport återställs du och NPC:erna till de sparade positionerna.
 
-### Timer
+**NPC-beteende, alert-nivå och scripted events återställs inte** — det är en motorteknisk begränsning i Glacier 2, inte en bugg. Tänk på bookmarks som positions-reset, inte kompletta savestates.
 
-Timern pausar automatiskt under laddningsskärmar. Den mäter väggtid minus laddningstid — inte spelets interna IGT. Tillräckligt för att segmenttima routes och jämföra optimeringar.
+### Overlay-timern
+
+Timern pausar automatiskt under laddningsskärmar. Den mäter väggtid minus laddningstid — tillräckligt precist för att segmenttima routes och jämföra optimeringar mellan försök.
+
+---
+
+## Bygg från källkod
+
+### Krav
+- Visual Studio 2022 med C++-komponenten
+- CMake 3.8+
+- Git
+
+```bat
+git clone https://github.com/pavledev/HitmanAbsolutionSDK.git
+git clone <detta-repo> HitmanAbsolutionSDK/Mods/SpeedrunToolkit
+```
+
+Lägg till `SpeedrunToolkit` i MODS-listan i `HitmanAbsolutionSDK/CMakeLists.txt`:
+```cmake
+set(MODS
+    SpeedrunToolkit
+    FreeCamera
+    ...
+)
+```
+
+```bat
+cd HitmanAbsolutionSDK
+git clone https://github.com/microsoft/vcpkg.git
+vcpkg\bootstrap-vcpkg.bat
+
+cmake -B build -G "Visual Studio 17 2022" -A Win32 ^
+  -DCMAKE_TOOLCHAIN_FILE=vcpkg/scripts/buildsystems/vcpkg.cmake ^
+  -DVCPKG_TARGET_TRIPLET=x86-windows
+
+cmake --build build --config Release --target DirectInputProxy SpeedrunToolkit
+```
+
+Kopiera `dinput8.dll`, `SpeedrunToolkit.dll` och `mods.ini` till spelkatalogen enligt stegen ovan.
