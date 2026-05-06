@@ -6,10 +6,9 @@
 #include <Glacier/ZLevelManager.h>
 #include <Glacier/Render/ZRenderManager.h>
 #include <Glacier/Render/IRenderDestinationEntity.h>
-#include <Glacier/Camera/ZCameraEntity.h>
 #include <Glacier/Render/ZSpatialEntity.h>
-#include <Glacier/ZHM5BaseCharacter.h>
-#include <Glacier/ZHitman5.h>
+#include <Glacier/Camera/ZCameraEntity.h>
+#include <Glacier/Templates/TEntityRef.h>
 
 SpeedrunToolkit::SpeedrunToolkit() = default;
 
@@ -23,8 +22,6 @@ SpeedrunToolkit::~SpeedrunToolkit()
 void SpeedrunToolkit::Initialize()
 {
     ModInterface::Initialize();
-    // No hooks needed: player is accessed via LevelManager->GetHitman() each frame,
-    // and the active camera via RenderManager->GetGameRenderDestinationEntity().
 }
 
 void SpeedrunToolkit::OnEngineInitialized()
@@ -47,30 +44,31 @@ void SpeedrunToolkit::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
     if (m_toggleAction.IsTriggered())
         m_isOpen = !m_isOpen;
 
-    // Resolve player from the level manager — no caching or scene hooks needed.
-    ZHitman5* pHitman = LevelManager->GetHitman().GetRawPointer();
-    ZHM5BaseCharacter* pPlayer = pHitman
-        ? pHitman->QueryInterfacePtr<ZHM5BaseCharacter>()
-        : nullptr;
+    // Resolve player ZSpatialEntity via the same pattern as FreeCamera::TeleportMainCharacter:
+    //   const TEntityRef<ZHitman5>& hitman = LevelManager->GetHitman();
+    //   ZSpatialEntity* spatial = hitman.GetEntityRef().QueryInterfacePtr<ZSpatialEntity>();
+    ZSpatialEntity* pPlayerSpatial = nullptr;
+    {
+        const auto& hitmanRef = LevelManager->GetHitman();
+        if (hitmanRef.GetRawPointer())
+            pPlayerSpatial = hitmanRef.GetEntityRef().QueryInterfacePtr<ZSpatialEntity>();
+    }
 
     // Resolve the active render camera for world-to-screen projection.
     ZCameraEntity* pCamera = nullptr;
-    auto renderDest = RenderManager->GetGameRenderDestinationEntity();
-    if (renderDest.GetRawPointer())
     {
-        auto camRef = renderDest.GetRawPointer()->GetSource();
-        pCamera = camRef.GetRawPointer();
+        auto renderDest = RenderManager->GetGameRenderDestinationEntity();
+        if (renderDest.GetRawPointer())
+        {
+            auto camRef = renderDest.GetRawPointer()->GetSource();
+            pCamera = camRef.GetRawPointer();
+        }
     }
 
-    // Push state into features.
-    if (pPlayer)
-    {
-        ZSpatialEntity* pSpatial = pPlayer->QueryInterfacePtr<ZSpatialEntity>();
-        if (pSpatial)
-            m_overlay.SetPlayerPosition(pSpatial->GetWorldPosition());
-    }
+    if (pPlayerSpatial)
+        m_overlay.SetPlayerPosition(pPlayerSpatial->GetWorldPosition());
 
-    m_bookmarks.SetPlayerEntity(pPlayer);
+    m_bookmarks.SetPlayerSpatial(pPlayerSpatial);
     m_triggerViz.SetActiveCamera(pCamera);
 
     m_overlay.OnFrameUpdate(updateEvent);
@@ -132,14 +130,15 @@ void SpeedrunToolkit::RenderMainWindow()
             ImGui::TextDisabled("Speedrun Toolkit for Hitman Absolution");
             ImGui::TextDisabled("Built on HitmanAbsolutionSDK by pavledev.");
             ImGui::Spacing();
-            ImGui::SeparatorText("NPC position restore");
+            ImGui::SeparatorText("Notes");
             ImGui::TextWrapped(
-                "Bookmarks save and restore player transform and NPC world positions. "
-                "AI state, alert level, patrol logic, and scripted event state are NOT "
-                "restored — this is a fundamental engine limitation. "
-                "Speedrunners should treat bookmarks as position reset, not full savestates.");
+                "Bookmarks save and restore player transform. "
+                "AI state, alert level, patrol logic, and scripted events are NOT "
+                "restored — engine limitation. "
+                "NPC position snapshots: framework in place, requires actor "
+                "enumeration API (TODO).");
             ImGui::Spacing();
-            ImGui::TextDisabled("Memory offsets: Steam version (LiveSplit.HitmanAbsolution by SuiMachine).");
+            ImGui::TextDisabled("Memory offsets: Steam version (LiveSplit.HitmanAbsolution).");
             ImGui::EndTabItem();
         }
 

@@ -27,6 +27,7 @@ private:
     bool   m_wasLoading        = false;
     double m_accumulatedSecs   = 0.0;
     std::chrono::steady_clock::time_point m_segmentStart;
+    std::chrono::steady_clock::time_point m_lastFrameTime;
 
     // Position / speed
     float4 m_currentPos{};

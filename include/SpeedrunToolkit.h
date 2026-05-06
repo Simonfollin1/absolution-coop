@@ -3,16 +3,12 @@
 #include <Glacier/ZGameLoopManager.h>
 #include <Glacier/ZLevelManager.h>
 #include <Glacier/Input/ZInputAction.h>
-#include <Glacier/Entity/ZEntityRef.h>
-#include <Glacier/Templates/TEntityRef.h>
 
 #include <ModInterface.h>
 
 #include "Features/SpeedrunOverlay.h"
 #include "Features/PositionBookmarks.h"
 #include "Features/TriggerZoneVisualizer.h"
-
-class ZHitman5;
 
 class SpeedrunToolkit : public ModInterface
 {

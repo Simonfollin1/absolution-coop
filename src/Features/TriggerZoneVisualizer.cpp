@@ -1,11 +1,9 @@
 #include "Features/TriggerZoneVisualizer.h"
 
 #include <imgui.h>
-#include <imgui_internal.h>
 
 #include <Glacier/ZGameLoopManager.h>
 #include <Glacier/Camera/ZCameraEntity.h>
-#include <Glacier/Render/ZSpatialEntity.h>
 
 // TODO: Once the SDK exposes a scene entity iteration API (or a ZCheckPointManager
 // accessor that returns individual ZCheckPointEntity refs), populate m_boxes here

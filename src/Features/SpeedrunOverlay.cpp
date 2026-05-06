@@ -5,23 +5,30 @@
 #include <cmath>
 
 #include <imgui.h>
+
 void SpeedrunOverlay::OnEngineInitialized()
 {
     m_timerStartStopAction = ZInputAction(GenerateBindingExpression("SRT_TimerStartStop", "F1"));
     m_timerResetAction     = ZInputAction(GenerateBindingExpression("SRT_TimerReset",     "F2"));
 
-    m_segmentStart = std::chrono::steady_clock::now();
+    auto now = std::chrono::steady_clock::now();
+    m_segmentStart  = now;
+    m_lastFrameTime = now;
 }
 
-void SpeedrunOverlay::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
+void SpeedrunOverlay::OnFrameUpdate(const SGameUpdateEvent& /*updateEvent*/)
 {
     const bool isLoading = GameOffsets::IsLoading();
+
+    auto now = std::chrono::steady_clock::now();
+    double frameDelta = std::chrono::duration<double>(now - m_lastFrameTime).count();
+    m_lastFrameTime = now;
 
     if (m_timerStartStopAction.IsTriggered())
     {
         m_timerRunning = !m_timerRunning;
         if (m_timerRunning)
-            m_segmentStart = std::chrono::steady_clock::now();
+            m_segmentStart = now;
     }
 
     if (m_timerResetAction.IsTriggered())
@@ -33,27 +40,25 @@ void SpeedrunOverlay::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
     // Accumulate time, skipping loading screens when auto-pause is enabled.
     if (m_timerRunning && !(m_autoPauseDuringLoad && isLoading))
     {
-        auto now    = std::chrono::steady_clock::now();
         double delta = std::chrono::duration<double>(now - m_segmentStart).count();
         m_accumulatedSecs += delta;
         m_segmentStart = now;
     }
     else
     {
-        // Keep start time fresh so we don't accumulate a gap when resuming.
-        m_segmentStart = std::chrono::steady_clock::now();
+        m_segmentStart = now;
     }
 
     m_wasLoading = isLoading;
 
-    // Speed: distance between this frame and the last.
-    if (m_hasPlayerPos && updateEvent.m_fDeltaTime > 0.f)
+    // Speed: distance between this frame and the last, over wall-clock delta.
+    if (m_hasPlayerPos && frameDelta > 0.0)
     {
         float dx = m_currentPos.x - m_lastPos.x;
         float dy = m_currentPos.y - m_lastPos.y;
         float dz = m_currentPos.z - m_lastPos.z;
-        float dist = std::sqrtf(dx * dx + dy * dy + dz * dz);
-        m_speed = dist / updateEvent.m_fDeltaTime;
+        float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+        m_speed = dist / static_cast<float>(frameDelta);
     }
     m_lastPos = m_currentPos;
 }
@@ -89,9 +94,9 @@ void SpeedrunOverlay::RenderOverlayWindow()
 
             ImVec4 timerColor = m_timerRunning
                 ? (isLoading && m_autoPauseDuringLoad
-                    ? ImVec4(1.f, 0.6f, 0.1f, 1.f)   // orange = paused by load
-                    : ImVec4(0.2f, 1.f, 0.3f, 1.f))   // green = running
-                : ImVec4(0.7f, 0.7f, 0.7f, 1.f);      // grey = stopped
+                    ? ImVec4(1.f, 0.6f, 0.1f, 1.f)
+                    : ImVec4(0.2f, 1.f, 0.3f, 1.f))
+                : ImVec4(0.7f, 0.7f, 0.7f, 1.f);
 
             ImGui::TextColored(timerColor, "SEG  %s", timeBuf);
         }
@@ -110,14 +115,10 @@ void SpeedrunOverlay::RenderOverlayWindow()
         }
 
         if (m_showSpeed)
-        {
             ImGui::Text("SPD  %.1f u/s", m_speed);
-        }
 
         if (m_showLoadingIndicator && isLoading)
-        {
             ImGui::TextColored(ImVec4(1.f, 0.2f, 0.2f, 1.f), "LOADING");
-        }
     }
     ImGui::End();
 
@@ -155,7 +156,7 @@ void SpeedrunOverlay::RenderSettingsPanel()
 
 void SpeedrunOverlay::FormatTime(double seconds, char* buf, size_t bufSize)
 {
-    int    minutes    = static_cast<int>(seconds) / 60;
-    double remaining  = seconds - minutes * 60.0;
+    int    minutes   = static_cast<int>(seconds) / 60;
+    double remaining = seconds - minutes * 60.0;
     std::snprintf(buf, bufSize, "%02d:%06.3f", minutes, remaining);
 }

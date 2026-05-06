@@ -8,8 +8,6 @@
 #include <cstring>
 
 #include <imgui.h>
-#include <Glacier/ZHM5BaseCharacter.h>
-#include <Glacier/Actor/ZActor.h>
 #include <Glacier/Render/ZSpatialEntity.h>
 
 void PositionBookmarks::OnEngineInitialized()
@@ -49,72 +47,25 @@ void PositionBookmarks::OnFrameUpdate(const SGameUpdateEvent& /*updateEvent*/)
 
 void PositionBookmarks::SaveSlot(int slot)
 {
-    if (!m_pPlayer) return;
+    if (!m_pPlayerSpatial) return;
 
     Bookmark& bm = m_slots[slot];
-
-    // Save player spatial state.
-    ZSpatialEntity* pSpatial = m_pPlayer->QueryInterfacePtr<ZSpatialEntity>();
-    if (pSpatial)
-    {
-        bm.playerPosition = pSpatial->GetWorldPosition();
-        bm.playerMatrix   = pSpatial->GetObjectToWorldMatrix();
-    }
-
-    // Save NPC snapshots.
-    bm.actorSnapshots.clear();
-    if (m_pActors)
-    {
-        for (const auto& actorRef : *m_pActors)
-        {
-            ZActor* pActor = actorRef.GetRawPointer();
-            if (!pActor) continue;
-
-            ZSpatialEntity* pActorSpatial = pActor->QueryInterfacePtr<ZSpatialEntity>();
-            if (!pActorSpatial) continue;
-
-            ActorSnapshot snap;
-            snap.actorRef = actorRef;
-            snap.position = pActorSpatial->GetWorldPosition();
-            snap.matrix   = pActorSpatial->GetObjectToWorldMatrix();
-            bm.actorSnapshots.push_back(std::move(snap));
-        }
-    }
-
+    bm.playerPosition = m_pPlayerSpatial->GetWorldPosition();
+    bm.playerMatrix   = m_pPlayerSpatial->GetObjectToWorldMatrix();
     bm.isSet = true;
 }
 
 void PositionBookmarks::TeleportToSlot(int slot)
 {
     if (!m_slots[slot].isSet) return;
-    if (!m_pPlayer) return;
+    if (!m_pPlayerSpatial) return;
 
-    const Bookmark& bm = m_slots[slot];
-
-    // Restore player transform.
-    ZSpatialEntity* pSpatial = m_pPlayer->QueryInterfacePtr<ZSpatialEntity>();
-    if (pSpatial)
-        pSpatial->SetObjectToWorldMatrix(bm.playerMatrix);
-
-    // Restore NPC positions.
-    // Note: this resets world position only; AI state (alert level, patrol logic,
-    // scripted event state) is not restored. Speedrunners should be aware of this.
-    for (const auto& snap : bm.actorSnapshots)
-    {
-        ZActor* pActor = snap.actorRef.GetRawPointer();
-        if (!pActor) continue;
-
-        ZSpatialEntity* pActorSpatial = pActor->QueryInterfacePtr<ZSpatialEntity>();
-        if (!pActorSpatial) continue;
-
-        pActorSpatial->SetObjectToWorldMatrix(snap.matrix);
-    }
+    m_pPlayerSpatial->SetObjectToWorldMatrix(m_slots[slot].playerMatrix);
 }
 
 void PositionBookmarks::RenderTab()
 {
     ImGui::TextDisabled("Teleport keys: Numpad1-5 (configurable in mods.ini)");
-    ImGui::TextDisabled("Save: click [Save] button below, or use Ctrl+Numpad1-5.");
     ImGui::Spacing();
 
     for (int i = 0; i < SLOT_COUNT; ++i)
@@ -135,9 +86,8 @@ void PositionBookmarks::RenderTab()
                 TeleportToSlot(i);
             ImGui::SameLine();
 
-            ImGui::Text("(%.0f, %.0f, %.0f)  %d NPCs",
-                bm.playerPosition.x, bm.playerPosition.y, bm.playerPosition.z,
-                static_cast<int>(bm.actorSnapshots.size()));
+            ImGui::Text("(%.0f, %.0f, %.0f)",
+                bm.playerPosition.x, bm.playerPosition.y, bm.playerPosition.z);
         }
         else
         {
@@ -185,7 +135,6 @@ void PositionBookmarks::PersistToDisk(int level, int section)
 
         if (bm.isSet)
         {
-            // Player matrix (16 floats).
             f << "M=";
             for (int j = 0; j < 16; ++j)
                 f << bm.playerMatrix.flt[j] << (j < 15 ? "," : "\n");
@@ -205,7 +154,6 @@ void PositionBookmarks::LoadFromDisk(int level, int section)
     {
         if (line.size() > 2 && line.front() == '[')
         {
-            // Section header e.g. [Slot0]
             int s = -1;
             std::sscanf(line.c_str(), "[Slot%d]", &s);
             if (s >= 0 && s < SLOT_COUNT) currentSlot = s;
@@ -220,18 +168,16 @@ void PositionBookmarks::LoadFromDisk(int level, int section)
         std::string val = line.substr(eq + 1);
         Bookmark& bm = m_slots[currentSlot];
 
-        if (key == "IsSet")  bm.isSet = (val == "1");
-        if (key == "Label")  std::strncpy(bm.label, val.c_str(), sizeof(bm.label) - 1);
+        if (key == "IsSet") bm.isSet = (val == "1");
+        if (key == "Label") std::strncpy(bm.label, val.c_str(), sizeof(bm.label) - 1);
         if (key == "M" && bm.isSet)
         {
             std::istringstream ss(val);
             std::string token;
             int j = 0;
             while (std::getline(ss, token, ',') && j < 16)
-            {
                 bm.playerMatrix.flt[j++] = std::stof(token);
-            }
-            // Reconstruct position from matrix translation column.
+
             bm.playerPosition.x = bm.playerMatrix.Trans.x;
             bm.playerPosition.y = bm.playerMatrix.Trans.y;
             bm.playerPosition.z = bm.playerMatrix.Trans.z;
