@@ -8,15 +8,12 @@
 #include <cstring>
 
 #include <imgui.h>
-#include <Glacier/ZGameLoopManager.h>
 #include <Glacier/ZHM5BaseCharacter.h>
 #include <Glacier/Actor/ZActor.h>
 #include <Glacier/Render/ZSpatialEntity.h>
 
 void PositionBookmarks::OnEngineInitialized()
 {
-    GameLoopManager->RegisterForFrameUpdate(this, &PositionBookmarks::OnFrameUpdate);
-
     // Default: Numpad1-5 teleports to slot 1-5.
     // Override via mods.ini with key "SRT_Teleport1" etc.
     const char* defaultKeys[SLOT_COUNT] = { "Numpad1","Numpad2","Numpad3","Numpad4","Numpad5" };

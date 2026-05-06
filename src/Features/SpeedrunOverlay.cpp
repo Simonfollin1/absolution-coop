@@ -5,12 +5,8 @@
 #include <cmath>
 
 #include <imgui.h>
-#include <Glacier/ZGameLoopManager.h>
-
 void SpeedrunOverlay::OnEngineInitialized()
 {
-    GameLoopManager->RegisterForFrameUpdate(this, &SpeedrunOverlay::OnFrameUpdate);
-
     m_timerStartStopAction = ZInputAction(GenerateBindingExpression("SRT_TimerStartStop", "F1"));
     m_timerResetAction     = ZInputAction(GenerateBindingExpression("SRT_TimerReset",     "F2"));
 
