@@ -10,15 +10,10 @@ add_library(SpeedrunToolkit SHARED ${SOURCES})
 
 target_include_directories(SpeedrunToolkit PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
-    "${CMAKE_SOURCE_DIR}/HitmanAbsolutionSDK/include"
-    "${CMAKE_SOURCE_DIR}/ExternalLibraries/ImGui"
-    "${CMAKE_SOURCE_DIR}/ExternalLibraries/ImGui/backends"
 )
 
 target_link_libraries(SpeedrunToolkit PRIVATE
     HitmanAbsolutionSDK
-    ImGui
-    minhook::minhook
 )
 
 set_target_properties(SpeedrunToolkit PROPERTIES
