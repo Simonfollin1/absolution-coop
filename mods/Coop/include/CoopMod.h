@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cstdint>
 #include <deque>
 #include <string>
+#include <vector>
 
 #include <Glacier/ZGameLoopManager.h>
 #include <Glacier/Input/ZInputAction.h>
@@ -68,7 +70,18 @@ private:
     void RenderRulesTab();
     void RenderDiagnosticsTab();
     void RenderEngineTab();
+    void RenderResearchTab();
     void RenderHudOverlay();
+
+    // Watches for the things worth having a timestamped record of, and writes
+    // them to mods/Coop.log. Everything in here is a question the game answers
+    // and nothing else can: when a checkpoint actually fires, whether a killed
+    // actor leaves the list, when the player entity is replaced.
+    void TraceWorldChanges();
+
+    // The one-hit research probe: snapshots the player object, lets a single
+    // hit reach the engine, and reports which bytes moved.
+    void UpdatePlayerDiff();
 
     void AddLogLine(const std::string& line);
     std::string DescribeEvent(const Coop::Net::EventMessage& event) const;
@@ -138,6 +151,39 @@ private:
     std::string m_keyToggle = "F6";
     std::string m_keyFollow = "F7";
     std::string m_keyMarker = "F8";
+
+    // --- Research ---------------------------------------------------------
+
+    std::string m_lastDumpPath;
+    std::string m_lastDumpError;
+
+    // What TraceWorldChanges compares against.
+    int      m_tracedJumpPoint = -2;
+    uint8_t  m_tracedLevel     = 0xFE;
+    uint8_t  m_tracedSection   = 0xFE;
+    uint32_t m_tracedHits      = 0;
+    bool     m_tracedArmed     = false;
+    uint32_t m_tracedDeaths    = 0;
+
+    // The player object, before and after one hit the engine was allowed to
+    // see. ZHitman5 is 0xD20 bytes; the whole thing is cheap to keep twice.
+    static constexpr size_t kPlayerSnapshotBytes = 0xD20;
+
+    std::vector<uint8_t> m_playerBefore;
+    std::vector<uint8_t> m_playerAfter;
+    bool                 m_awaitingPassThrough = false;
+    float                m_passThroughWaited   = 0.f;
+
+    // Offset -> what it was, what it became. Only the dwords that moved.
+    struct PlayerDelta
+    {
+        size_t   offset = 0;
+        uint32_t before = 0;
+        uint32_t after  = 0;
+    };
+
+    std::vector<PlayerDelta> m_playerDeltas;
+    std::string              m_playerDiffNote;
 };
 
 DECLARE_MOD(CoopMod)

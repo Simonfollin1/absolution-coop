@@ -17,9 +17,12 @@
 
 #include "CoopMod.h"
 #include "Game/BuildInfo.h"
+#include "Game/DebugDump.h"
+#include "Game/HitInspector.h"
 #include "Memory/GameOffsets.h"
 #include "Game/ModPresence.h"
 #include "UI/CursorFocus.h"
+#include "Diag/Diag.h"
 
 using namespace Coop;
 
@@ -205,11 +208,25 @@ CoopMod::~CoopMod()
     {
         GameLoopManager->UnregisterForFrameUpdate(delegate);
     }
+
+    Diag::Log("unloaded");
+    Diag::Shutdown();
 }
 
 void CoopMod::Initialize()
 {
-    ModInterface::Initialize();
+    // Before anything else, so a crash during startup still leaves a report.
+    // The SDK's own logger writes to a console window that dies with the game;
+    // this writes mods/Coop.log and flushes every line.
+    Diag::Initialize("Coop");
+    Diag::InstallCrashHandler();
+    Diag::Log("Initialize");
+
+    // Not ModInterface::Initialize(): its only act is an MH_Initialize whose
+    // already-initialised result it reports as an ERROR, once per mod, every
+    // launch. Nothing here hooks anything - the damage interception is a vtable
+    // write on one instance - so there is nothing to bring up in the first
+    // place, and no reason to make the console cry wolf.
 }
 
 void CoopMod::OnEngineInitialized()
@@ -241,6 +258,13 @@ void CoopMod::OnEngineInitialized()
     m_cost.Configure("coop");
 
     AddLogLine(Game::BuildInfo::Get().Describe());
+
+    Diag::Log("engine up: %s, detected as %s, offsets %s",
+              Game::BuildInfo::Get().Describe().c_str(),
+              GameOffsets::GetBuildName(),
+              Game::BuildInfo::Get().OffsetsUsable() ? "usable" : "NOT usable");
+    Diag::Log("bindings: accepted=%d  %s",
+              m_bindingsAccepted ? 1 : 0, m_bindingExpression.c_str());
 
     // Both mods drive the render destination, and whichever writes last wins.
     // Nothing here can arbitrate that, so it is said once rather than left for
@@ -396,6 +420,11 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
     UpdateMarkerKey();
     UpdateKillFeed();
 
+    TraceWorldChanges();
+
+    m_passThroughWaited += deltaSeconds;
+    UpdatePlayerDiff();
+
     if (!m_session.IsActive())
     {
         return;
@@ -505,6 +534,152 @@ void CoopMod::UpdateKillFeed()
         }
 
         AddLogLine(std::format("{} down", Game::PeerAvatars::SanitiseForDisplay(death.name, 40)));
+    }
+}
+
+void CoopMod::TraceWorldChanges()
+{
+    // A record of when the things we cannot predict actually happen, on disk,
+    // with timestamps. Every line here answers a question that only a running
+    // game can: whether the checkpoint index moves when you walk into a new
+    // area, whether a killed guard leaves the alive list or stays in it with a
+    // flag, how often the player entity is replaced.
+    const int     jumpPoint = m_probe.CurrentJumpPoint();
+    const uint8_t level     = m_probe.LocalState().level;
+    const uint8_t section   = m_probe.LocalState().section;
+
+    if (jumpPoint != m_tracedJumpPoint || level != m_tracedLevel || section != m_tracedSection)
+    {
+        Diag::Log("world: chapter %u.%u checkpoint %d  (was %u.%u / %d)",
+                  level, section, jumpPoint,
+                  m_tracedLevel, m_tracedSection, m_tracedJumpPoint);
+
+        m_tracedJumpPoint = jumpPoint;
+        m_tracedLevel     = level;
+        m_tracedSection   = section;
+    }
+
+    if (Game::TheDownedState().IsArmed() != m_tracedArmed)
+    {
+        m_tracedArmed = Game::TheDownedState().IsArmed();
+
+        Diag::Log("interception %s: %s | %s",
+                  m_tracedArmed ? "armed" : "let go",
+                  Game::TheDownedState().Diagnostic().c_str(),
+                  Game::TheDownedState().ImmunityNote().c_str());
+    }
+
+    // Which of the two death signals the engine actually uses. Whichever
+    // counter moves when a guard goes down is the answer, and the log gives it
+    // a timestamp so it can be matched against what happened on screen.
+    const uint32_t deaths = m_probe.DeathsByFlag() + m_probe.DeathsByVanish();
+
+    if (deaths != m_tracedDeaths)
+    {
+        Diag::Log("actor deaths: %u by flag, %u by leaving the list (%u listed alive)",
+                  m_probe.DeathsByFlag(), m_probe.DeathsByVanish(),
+                  m_probe.AliveActorCount());
+
+        m_tracedDeaths = deaths;
+    }
+
+    const uint32_t hits = Game::TheDownedState().HitsTaken();
+
+    if (hits != m_tracedHits)
+    {
+        const std::vector<Game::HitCapture> captures = Game::TheHitInspector().Snapshot();
+
+        if (!captures.empty())
+        {
+            const Game::HitCapture& latest = captures.front();
+
+            Diag::Log("hit %u: SHitInfo at %08X, called from +%08X, health now %.0f",
+                      latest.ordinal, static_cast<unsigned>(latest.address),
+                      static_cast<unsigned>(latest.callerRva),
+                      Game::TheDownedState().HitPoints());
+        }
+
+        m_tracedHits = hits;
+    }
+}
+
+void CoopMod::UpdatePlayerDiff()
+{
+    if (!m_awaitingPassThrough)
+    {
+        return;
+    }
+
+    Game::DownedState& downed = Game::TheDownedState();
+
+    // Still waiting to be shot. Give up after a while rather than leaving a
+    // hit armed indefinitely - somebody who forgets this is on will die to it.
+    if (downed.PassThroughRemaining() > 0)
+    {
+        constexpr float kGiveUpSeconds = 60.f;
+
+        if (m_passThroughWaited > kGiveUpSeconds)
+        {
+            downed.ArmPassThrough(0);
+
+            m_awaitingPassThrough = false;
+            m_playerDiffNote      = "nothing hit you within a minute - disarmed";
+
+            AddLogLine(m_playerDiffNote);
+        }
+
+        return;
+    }
+
+    // It was consumed, so the engine has now seen a hit. Whatever moved in the
+    // player object between the two snapshots is what the engine did about it.
+    m_playerAfter.assign(kPlayerSnapshotBytes, 0);
+
+    const size_t read = downed.SnapshotPlayer(m_playerAfter.data(), kPlayerSnapshotBytes);
+
+    m_awaitingPassThrough = false;
+    m_playerDeltas.clear();
+
+    if (read == 0 || m_playerBefore.size() != kPlayerSnapshotBytes)
+    {
+        m_playerDiffNote = "could not read the player object on both sides of the hit";
+        AddLogLine(m_playerDiffNote);
+
+        return;
+    }
+
+    for (size_t offset = 0; offset + sizeof(uint32_t) <= kPlayerSnapshotBytes;
+         offset += sizeof(uint32_t))
+    {
+        uint32_t before = 0;
+        uint32_t after  = 0;
+
+        std::memcpy(&before, m_playerBefore.data() + offset, sizeof(before));
+        std::memcpy(&after,  m_playerAfter.data()  + offset, sizeof(after));
+
+        if (before != after)
+        {
+            m_playerDeltas.push_back({ offset, before, after });
+        }
+    }
+
+    m_playerDiffNote = std::format("{} dwords changed across one hit", m_playerDeltas.size());
+
+    AddLogLine(m_playerDiffNote);
+
+    Diag::Log("player diff: %zu dwords changed across one engine-visible hit",
+              m_playerDeltas.size());
+
+    for (const PlayerDelta& delta : m_playerDeltas)
+    {
+        float beforeFloat = 0.f;
+        float afterFloat  = 0.f;
+
+        std::memcpy(&beforeFloat, &delta.before, sizeof(beforeFloat));
+        std::memcpy(&afterFloat,  &delta.after,  sizeof(afterFloat));
+
+        Diag::Log("  +0x%03zX  %08X -> %08X   %.3f -> %.3f",
+                  delta.offset, delta.before, delta.after, beforeFloat, afterFloat);
     }
 }
 
@@ -853,6 +1028,12 @@ void CoopMod::RenderWindow()
             ImGui::EndTabItem();
         }
 
+        if (ImGui::BeginTabItem("Research"))
+        {
+            RenderResearchTab();
+            ImGui::EndTabItem();
+        }
+
         if (ImGui::BeginTabItem("Diagnostics"))
         {
             RenderDiagnosticsTab();
@@ -1178,6 +1359,261 @@ void CoopMod::RenderEngineTab()
     }
 
     ImGui::EndChild();
+}
+
+void CoopMod::RenderResearchTab()
+{
+    Game::HitInspector& hits   = Game::TheHitInspector();
+    Game::DownedState&  downed = Game::TheDownedState();
+
+    ImGui::TextWrapped(
+        "Things only a running game can answer. None of this changes how the "
+        "mod plays except where it says so.");
+
+    // ---- The dump ---------------------------------------------------------
+
+    ImGui::SeparatorText("Write everything to a file");
+
+    if (ImGui::Button("Dump", ImVec2(150.f, 0.f)))
+    {
+        m_lastDumpPath = Game::WriteDump(m_configVars, m_probe, m_bindingExpression,
+                                         std::vector<std::string>(m_log.begin(), m_log.end()),
+                                         m_lastDumpError);
+
+        AddLogLine(m_lastDumpPath.empty()
+            ? std::format("Dump failed: {}", m_lastDumpError)
+            : std::format("Wrote {}", m_lastDumpPath));
+    }
+
+    ImGui::SameLine();
+    ImGui::TextDisabled("next to HMA.exe, as coop-dump-NNN.txt");
+
+    if (!m_lastDumpPath.empty())
+    {
+        ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.f), "%s", m_lastDumpPath.c_str());
+    }
+    else if (!m_lastDumpError.empty())
+    {
+        ImGui::TextColored(ImVec4(1.f, 0.45f, 0.45f, 1.f), "%s", m_lastDumpError.c_str());
+    }
+
+    ImGui::TextDisabled("Read the engine configuration on the Engine tab first,");
+    ImGui::TextDisabled("or its 1600-odd variables will be missing from the file.");
+
+    // ---- Hits -------------------------------------------------------------
+
+    ImGui::SeparatorText("What is in a hit");
+
+    ImGui::TextWrapped(
+        "Every intercepted hit is captured whole. The damage figure is behind "
+        "an accessor with no known address, but the struct it reads from "
+        "arrives here by reference - so the slots that differ between a pistol "
+        "and a shotgun are worth more than the accessor.");
+
+    bool capturing = hits.Enabled();
+
+    if (ImGui::Checkbox("Capture hits", &capturing))
+    {
+        hits.SetEnabled(capturing);
+    }
+
+    ImGui::SameLine();
+
+    if (ImGui::Button("Clear"))
+    {
+        hits.Clear();
+    }
+
+    ImGui::SameLine();
+    ImGui::Text("%u seen, %zu kept", hits.Total(), hits.Kept());
+
+    const std::vector<std::pair<uintptr_t, uint32_t>> callers = hits.Callers();
+
+    if (!callers.empty())
+    {
+        ImGui::Spacing();
+        ImGui::TextDisabled("Called from (these are where the damage is computed):");
+
+        for (const auto& [rva, count] : callers)
+        {
+            ImGui::Text("  HMA.exe + %08X   %u hits", static_cast<unsigned>(rva), count);
+        }
+    }
+
+    if (hits.Kept() > 0 &&
+        ImGui::BeginTable("hitslots", 3,
+            ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY,
+            ImVec2(0.f, 200.f)))
+    {
+        ImGui::TableSetupColumn("Offset", ImGuiTableColumnFlags_WidthFixed, 70.f);
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 60.f);
+        ImGui::TableSetupColumn("Values seen (hex, float, int)");
+        ImGui::TableHeadersRow();
+
+        constexpr size_t kDwords = Game::kHitCaptureBytes / sizeof(uint32_t);
+
+        for (size_t i = 0; i < kDwords; ++i)
+        {
+            const std::vector<uint32_t> values = hits.ValuesAt(i);
+
+            if (values.empty())
+            {
+                continue;
+            }
+
+            ImGui::TableNextRow();
+
+            ImGui::TableNextColumn();
+            ImGui::Text("+0x%02zX", i * sizeof(uint32_t));
+
+            ImGui::TableNextColumn();
+
+            if (values.size() > 1)
+            {
+                ImGui::TextColored(ImVec4(1.f, 0.82f, 0.35f, 1.f), "varies");
+            }
+            else
+            {
+                ImGui::TextDisabled("same");
+            }
+
+            ImGui::TableNextColumn();
+
+            std::string line;
+
+            for (size_t v = 0; v < values.size() && v < 4; ++v)
+            {
+                line += Game::DescribeDword(values[v]);
+                line += "   ";
+            }
+
+            ImGui::Text("%s", line.c_str());
+        }
+
+        ImGui::EndTable();
+    }
+
+    // ---- The one-hit probe ------------------------------------------------
+
+    ImGui::SeparatorText("Where the engine keeps your health");
+
+    ImGui::TextWrapped(
+        "The mod carries its own health pool because the engine's is at an "
+        "offset nobody has found. This is how to find it: snapshot the player "
+        "object, let exactly one hit reach the engine, and see what moved.");
+
+    ImGui::TextColored(ImVec4(1.f, 0.82f, 0.35f, 1.f),
+        "That hit is real. It can kill you, and dying reloads a checkpoint.");
+    ImGui::TextColored(ImVec4(1.f, 0.82f, 0.35f, 1.f),
+        "Do it at full health, somewhere you do not mind losing.");
+
+    ImGui::BeginDisabled(m_awaitingPassThrough || !downed.IsArmed());
+
+    if (ImGui::Button("Let the next hit through", ImVec2(220.f, 0.f)))
+    {
+        m_playerBefore.assign(kPlayerSnapshotBytes, 0);
+
+        if (downed.SnapshotPlayer(m_playerBefore.data(), kPlayerSnapshotBytes) == 0)
+        {
+            m_playerDiffNote = "could not read the player object - not arming";
+        }
+        else
+        {
+            downed.ArmPassThrough(1);
+
+            m_awaitingPassThrough = true;
+            m_passThroughWaited   = 0.f;
+            m_playerDiffNote      = "armed - go and get shot once";
+        }
+
+        AddLogLine(m_playerDiffNote);
+    }
+
+    ImGui::EndDisabled();
+
+    if (m_awaitingPassThrough)
+    {
+        ImGui::SameLine();
+
+        if (ImGui::Button("Cancel"))
+        {
+            downed.ArmPassThrough(0);
+
+            m_awaitingPassThrough = false;
+            m_playerDiffNote      = "disarmed";
+        }
+    }
+
+    if (!downed.IsArmed())
+    {
+        ImGui::TextDisabled("Interception is not armed, so there is nothing to let through.");
+    }
+
+    if (!m_playerDiffNote.empty())
+    {
+        ImGui::Text("%s", m_playerDiffNote.c_str());
+    }
+
+    if (!m_playerDeltas.empty() &&
+        ImGui::BeginTable("playerdiff", 3,
+            ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY,
+            ImVec2(0.f, 180.f)))
+    {
+        ImGui::TableSetupColumn("Offset", ImGuiTableColumnFlags_WidthFixed, 80.f);
+        ImGui::TableSetupColumn("Before");
+        ImGui::TableSetupColumn("After");
+        ImGui::TableHeadersRow();
+
+        for (const PlayerDelta& delta : m_playerDeltas)
+        {
+            ImGui::TableNextRow();
+
+            ImGui::TableNextColumn();
+            ImGui::Text("+0x%03zX", delta.offset);
+
+            ImGui::TableNextColumn();
+            ImGui::Text("%s", Game::DescribeDword(delta.before).c_str());
+
+            ImGui::TableNextColumn();
+            ImGui::Text("%s", Game::DescribeDword(delta.after).c_str());
+        }
+
+        ImGui::EndTable();
+
+        ImGui::TextDisabled("A float that dropped by a plausible amount is the");
+        ImGui::TextDisabled("health. The whole list is also in mods\\Coop.log.");
+    }
+
+    // ---- Live key state ---------------------------------------------------
+
+    ImGui::SeparatorText("Are the keys reaching us");
+
+    ImGui::TextWrapped(
+        "Live. Every one of these reads false while this panel has focus, "
+        "because the SDK switches the game's input off while it holds the "
+        "keyboard - so this is only meaningful with the panel closed, which "
+        "means the log below is the part to read afterwards.");
+
+    const struct { const char* name; ZInputAction* action; } watched[] = {
+        { "toggle",   &m_toggleAction },
+        { "follow",   &m_followAction },
+        { "marker",   &m_markerAction },
+        { "spec <",   &m_specLeft     },
+        { "spec >",   &m_specRight    },
+        { "spec ^",   &m_specUp       },
+        { "spec v",   &m_specDown     },
+        { "spec in",  &m_specCloser   },
+        { "spec out", &m_specFurther  },
+    };
+
+    for (const auto& entry : watched)
+    {
+        const bool down = entry.action->Digital();
+
+        ImGui::TextColored(down ? ImVec4(0.45f, 0.85f, 0.45f, 1.f)
+                                : ImVec4(0.55f, 0.55f, 0.55f, 1.f),
+                           "%-9s %s", entry.name, down ? "DOWN" : "-");
+    }
 }
 
 void CoopMod::RenderDiagnosticsTab()

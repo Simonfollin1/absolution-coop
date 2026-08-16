@@ -1,6 +1,8 @@
 #include <Windows.h>
+#include <intrin.h>
 
 #include <algorithm>
+#include <cstring>
 #include <format>
 
 #include <Glacier/Player/ZHitman5.h>
@@ -8,6 +10,7 @@
 
 #include "Game/DownedState.h"
 #include "Game/BuildInfo.h"
+#include "Game/HitInspector.h"
 #include "Memory/GameOffsets.h"
 
 namespace Coop::Game
@@ -79,6 +82,22 @@ namespace Coop::Game
         // one is god mode for NPCs, a different flag for a different job.
         constexpr uintptr_t kPlayerGodModeOffset = 0xD4F5E0;
 
+        // POD only and no destructors in scope, because __try cannot coexist
+        // with anything that needs unwinding.
+        bool CopyPlayerBytes(const void* source, uint8_t* destination, size_t count)
+        {
+            __try
+            {
+                memcpy(destination, source, count);
+
+                return true;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                return false;
+            }
+        }
+
         bool PointerIsExecutable(const void* pointer)
         {
             if (!pointer)
@@ -109,12 +128,30 @@ namespace Coop::Game
         // The replacement vtable entry. __fastcall with a dummy second
         // argument is how MSVC's __thiscall is spelled when you have to write
         // one by hand on x86: ECX carries this, EDX is unused.
-        void __fastcall YouGotHitThunk(void* /*self*/, void* /*edx*/, const void* hitInfo)
+        void __fastcall YouGotHitThunk(void* self, void* /*edx*/, const void* hitInfo)
         {
-            // Deliberately never chains to the original. Not calling it is the
+            // Where the call came from. That is the code which built the
+            // SHitInfo, so it is where the damage figure was computed - the one
+            // thing a disassembler cannot tell us on its own, because YouGotHit
+            // is only ever reached through a vtable and has no direct callers.
+            //
+            // _ReturnAddress is an intrinsic, so this costs nothing.
+            TheHitInspector().Capture(hitInfo,
+                                      reinterpret_cast<uintptr_t>(_ReturnAddress()));
+
+            // Normally never chains to the original. Not calling it is the
             // whole mechanism: the engine is not told, so the engine cannot
             // start a death sequence, so nobody's world reloads.
+            //
+            // The exception is the research switch below, which exists to find
+            // where the engine keeps the player's real health: let exactly one
+            // hit through, and whatever changed in the player object is it.
             TheDownedState().OnHitIntercepted(hitInfo);
+
+            if (TheDownedState().ConsumePassThrough())
+            {
+                TheDownedState().CallOriginalYouGotHit(self, hitInfo);
+            }
         }
     }
 
@@ -478,6 +515,47 @@ namespace Coop::Game
             m_hitPoints = 0.f;
             GoDown();
         }
+    }
+
+    void DownedState::ArmPassThrough(uint32_t hits)
+    {
+        m_passThroughRemaining = hits;
+    }
+
+    bool DownedState::ConsumePassThrough()
+    {
+        if (m_passThroughRemaining == 0)
+        {
+            return false;
+        }
+
+        --m_passThroughRemaining;
+
+        return true;
+    }
+
+    void DownedState::CallOriginalYouGotHit(void* self, const void* hitInfo) const
+    {
+        if (!m_armed || !m_originalEntry || !self)
+        {
+            return;
+        }
+
+        // __thiscall by hand: ECX holds this, EDX is dead, the argument is on
+        // the stack. Same convention the thunk itself is written in.
+        using Original = void(__fastcall*)(void*, void*, const void*);
+
+        reinterpret_cast<Original>(m_originalEntry)(self, nullptr, hitInfo);
+    }
+
+    size_t DownedState::SnapshotPlayer(uint8_t* destination, size_t count) const
+    {
+        if (!m_armedFor || !destination || count == 0)
+        {
+            return 0;
+        }
+
+        return CopyPlayerBytes(m_armedFor, destination, count) ? count : 0;
     }
 
     void DownedState::GoDown()

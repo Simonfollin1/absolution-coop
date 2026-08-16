@@ -580,6 +580,21 @@ unsigned int      m_nActorDeathType      ...
 Anchor: whatever calls `YouGotHit` builds one of these. Work outwards from the
 callers of the slot found in §2.
 
+**The disassembler is the slow way round.** `YouGotHit` is only ever reached
+through a vtable, so it has no direct callers for Ghidra to list — which is why
+§2's caller search came back empty. The mod's replacement entry, on the other
+hand, is standing in the call: `_ReturnAddress()` inside it *is* the caller, and
+`SHitInfo` is right there by reference.
+
+So the Research tab captures both. Every intercepted hit is copied whole and
+kept, and the panel marks which dword offsets differed across the hits taken —
+a slot reading 20 for a pistol and 60 for a shotgun is the damage figure, found
+without reversing the accessor at all. The caller RVAs come out alongside it,
+and those open directly at `base + rva`: that is the code which computed the
+damage, which is the function §3.1 was asking for.
+
+One session with a pistol, a shotgun and a fist settles it.
+
 ### 3.2 `ZHM5Health` — where the real hit points live
 
 ```cpp
@@ -605,6 +620,19 @@ so the pointer is in one of the padded gaps between them.
 
 Worth having for its own sake: a real health bar for a downed teammate is more
 useful than a synthetic one.
+
+**The in-game route, which is shorter.** The mod owns the vtable entry the
+engine's damage handling goes through, so it can let exactly one hit past and
+watch. The Research tab snapshots all `0xD20` bytes of `ZHitman5`, arms a
+single pass-through, and diffs the two sides of the hit. Every dword that moved
+is listed with its float reading, and a float that dropped by a plausible
+amount is `m_fHitPoints` — or, if nothing in the object moved, the health lives
+behind one of those padded pointers and the diff has narrowed it to the pointer
+that was followed.
+
+That hit is real and can kill, so it is behind its own button with its own
+warning. It is also the only way to ask the question without a debugger
+attached to a running game.
 
 ### 3.3 Locomotion — the animation driver, and the gate on visible avatars
 

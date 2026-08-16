@@ -129,6 +129,30 @@ namespace Coop::Game
         // is a free function; not part of the interface anyone else should use.
         void OnHitIntercepted(const void* hitInfo);
 
+        // --- Research switch: letting a hit reach the engine ------------------
+        //
+        // The mod carries a shadow health pool because the engine's own is at
+        // an offset nobody has found. The way to find it is to let exactly one
+        // hit through and see what changed in the player object, which is a
+        // thing only a running game can answer.
+        //
+        // Dangerous on purpose and never on by default: a hit that reaches the
+        // engine can kill the player, and a death is a checkpoint reload. Arm
+        // it, take one hit, read the diff.
+        void ArmPassThrough(uint32_t hits);
+
+        // True at most `hits` times after arming. Called from the thunk.
+        bool ConsumePassThrough();
+
+        uint32_t PassThroughRemaining() const { return m_passThroughRemaining; }
+
+        // Calls the vtable entry we replaced. Only meaningful while armed.
+        void CallOriginalYouGotHit(void* self, const void* hitInfo) const;
+
+        // A copy of the player object's bytes, for diffing across a hit.
+        // Returns how many bytes it managed to read.
+        size_t SnapshotPlayer(uint8_t* destination, size_t count) const;
+
         void ResetForNewSession();
 
     private:
@@ -161,6 +185,12 @@ namespace Coop::Game
         size_t      m_patchedSlot    = 0;
         void*       m_originalEntry  = nullptr;
         ZHitman5*   m_armedFor       = nullptr;
+
+        // Written from the UI thread, read and decremented on the game thread.
+        // A hit landing on the frame it is armed or disarmed is not a race
+        // worth a lock: the worst outcome is one hit either way, which is the
+        // granularity of the thing anyway.
+        uint32_t    m_passThroughRemaining = 0;
 
         // The engine's own god-mode flag, and what was in it before we wrote.
         // Refused means we looked and decided not to, which is a decision to
