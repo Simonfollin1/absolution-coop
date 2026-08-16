@@ -21,6 +21,7 @@
 #include "Game/Instinct.h"
 #include "Game/EngineHealth.h"
 #include "Game/Perception.h"
+#include "Game/SceneSync.h"
 
 #include "UI/LoadedMarker.h"
 #include "Diag/FrameCost.h"
@@ -152,6 +153,14 @@ private:
     bool m_showOverlay = true;
 
     bool m_useUpnp = true;
+
+    // Which level we last told everybody we were in, and which one somebody
+    // else says they are in. The second is what "go to them" acts on.
+    std::string m_publishedScene;
+    std::string m_peerScene;
+    std::string m_peerSceneOwner;
+    std::string m_sceneError;
+    int         m_peerSceneCheckpoint = -1;
 
     char m_hostAddress[64] = "127.0.0.1:47474";
     char m_playerName[32]  = "Agent";

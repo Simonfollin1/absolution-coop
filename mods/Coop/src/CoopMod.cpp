@@ -520,6 +520,34 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
     // trusted before the whole damage model is rebuilt on top of them.
     m_engineHealth.Update();
 
+    // Which level we are in, tracked whether or not anybody is connected - the
+    // panel compares against it on the render thread, and reading it there
+    // every frame would mean walking into the level manager from the wrong
+    // thread for the sake of a string that changes twice an hour.
+    //
+    // Nothing replicated this before. Only where somebody was standing inside a
+    // level was ever sent, so a host who started a mission simply became
+    // "elsewhere" to everybody else, with no way for them to find out where
+    // elsewhere was, and no way to follow.
+    const std::string scene = Game::SceneSync::CurrentScene();
+
+    if (scene != m_publishedScene)
+    {
+        m_publishedScene = scene;
+
+        Diag::Log("scene: we are in %s", scene.empty() ? "(menu)" : scene.c_str());
+
+        if (m_session.IsActive())
+        {
+            Net::EventMessage announcement;
+            announcement.type = Net::EventType::LevelChanged;
+            announcement.x    = static_cast<float>(Game::SceneSync::CurrentCheckpoint());
+            announcement.text = scene;
+
+            m_session.SendEvent(announcement);
+        }
+    }
+
     TraceWorldChanges();
     TraceKeys();
     AutoDumpWhenReady(deltaSeconds);
@@ -1108,6 +1136,19 @@ void CoopMod::PumpEvents()
             Game::TheDownedState().ReviveOnCheckpoint();
         }
 
+        // Somebody said which level they are in. Remembered rather than acted
+        // on: loading a level throws away everything the player was doing, and
+        // that is not a decision to make because a packet arrived.
+        if (event.type == Net::EventType::LevelChanged && !event.text.empty())
+        {
+            m_peerScene           = event.text;
+            m_peerSceneCheckpoint = static_cast<int>(event.x);
+            m_peerSceneOwner      = name;
+
+            Diag::Log("scene: %s is in %s at checkpoint %d",
+                      name.c_str(), m_peerScene.c_str(), m_peerSceneCheckpoint);
+        }
+
         if (event.type == Net::EventType::Marker)
         {
             m_avatars.AddMarker(SVector3(event.x, event.y, event.z), name, event.originPeerId);
@@ -1557,6 +1598,16 @@ void CoopMod::RenderHudOverlay()
             }
         }
 
+        // The one thing worth interrupting for: everybody else is in a level
+        // you are not in, and the panel is where you fix that.
+        if (!m_peerScene.empty() && m_peerScene != m_publishedScene)
+        {
+            ImGui::Separator();
+            ImGui::TextColored(ImVec4(1.f, 0.82f, 0.35f, 1.f), "%s is in another mission",
+                               m_peerSceneOwner.empty() ? "Somebody" : m_peerSceneOwner.c_str());
+            ImGui::TextDisabled("Open co-op and press Go there");
+        }
+
         if (downed)
         {
             ImGui::Separator();
@@ -1660,6 +1711,47 @@ void CoopMod::RenderSessionTab()
     if (!status.lastError.empty())
     {
         ImGui::TextColored(ImVec4(1.f, 0.5f, 0.5f, 1.f), "%s", status.lastError.c_str());
+    }
+
+    // Following somebody into a mission. First thing on the tab, because it is
+    // the first thing anybody needs after connecting - the previous version got
+    // two people into a session and left one of them in the menu with nothing
+    // to press.
+    if (m_session.IsActive() && !m_peerScene.empty())
+    {
+        if (m_publishedScene != m_peerScene)
+        {
+            ImGui::SeparatorText("They are somewhere else");
+
+            ImGui::TextWrapped("%s is in a level you are not in.",
+                               m_peerSceneOwner.empty() ? "Somebody" : m_peerSceneOwner.c_str());
+
+            ImGui::TextDisabled("%s", m_peerScene.c_str());
+
+            if (ImGui::Button("Go there", ImVec2(180.f, 0.f)))
+            {
+                std::string error;
+
+                if (Game::SceneSync::LoadScene(m_peerScene, m_peerSceneCheckpoint, error))
+                {
+                    m_sceneError.clear();
+                    AddLogLine(std::format("Loading {}", m_peerScene));
+                }
+                else
+                {
+                    m_sceneError = error;
+                    AddLogLine(std::format("Could not go there: {}", error));
+                }
+            }
+
+            ImGui::SameLine();
+            ImGui::TextDisabled("this restarts you into their mission");
+
+            if (!m_sceneError.empty())
+            {
+                ImGui::TextColored(ImVec4(1.f, 0.45f, 0.45f, 1.f), "%s", m_sceneError.c_str());
+            }
+        }
     }
 
     ImGui::Spacing();
