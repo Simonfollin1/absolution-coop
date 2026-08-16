@@ -111,6 +111,46 @@ namespace Coop::Game
             return (base && address > base) ? address - base : address;
         }
 
+        // An address, named by whichever module it is actually in.
+        //
+        // Subtracting the game's base from everything produced one very
+        // confusing line in the first dump taken in the game: slot 5 of the
+        // player's IBaseCharacter table came out as a plausible-looking game
+        // offset when it is in fact our own replacement entry, sitting in
+        // Coop.dll. Anything outside HMA.exe says so now.
+        std::string DescribeCode(uintptr_t address)
+        {
+            if (!address)
+            {
+                return "(null)";
+            }
+
+            if (BuildInfo::Get().Contains(reinterpret_cast<const void*>(address)))
+            {
+                return std::format("HMA.exe+{:08X}", ToRva(address));
+            }
+
+            HMODULE module = nullptr;
+
+            if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                                 | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   reinterpret_cast<LPCSTR>(address), &module) && module)
+            {
+                char path[MAX_PATH] = {};
+
+                if (GetModuleFileNameA(module, path, MAX_PATH))
+                {
+                    const char* name = std::strrchr(path, '\\');
+                    name = name ? name + 1 : path;
+
+                    return std::format("{}+{:08X}", name,
+                                       address - reinterpret_cast<uintptr_t>(module));
+                }
+            }
+
+            return std::format("{:08X}", address);
+        }
+
         // MSVC's complete object locator, 32-bit layout. Only the type
         // descriptor pointer is wanted, and only its name.
         std::string NameFromVtable(void** vtable)
@@ -210,7 +250,7 @@ namespace Coop::Game
                     break;
                 }
 
-                report.entryRvas.push_back(ToRva(reinterpret_cast<uintptr_t>(entry)));
+                report.entries.push_back(DescribeCode(reinterpret_cast<uintptr_t>(entry)));
             }
 
             found.push_back(std::move(report));
@@ -355,6 +395,26 @@ namespace Coop::Game
 
                 file << "\n";
             }
+
+            if (capture.projectileByteCount == 0)
+            {
+                file << "    (no projectile - melee, close combat, or unreadable)\n";
+                continue;
+            }
+
+            file << std::format("    projectile {:08X}:\n", capture.projectile);
+
+            for (size_t i = 0; i + 16 <= capture.projectileByteCount; i += 16)
+            {
+                file << std::format("      +{:02X} ", i);
+
+                for (size_t b = 0; b < 16; ++b)
+                {
+                    file << std::format("{:02X} ", capture.projectileBytes[i + b]);
+                }
+
+                file << "\n";
+            }
         }
 
         file << "\n";
@@ -376,11 +436,11 @@ namespace Coop::Game
             file << std::format("  +0x{:02X}  vtable {:08X}  {}  ({} entries)\n",
                                 report.objectOffset, report.vtableRva,
                                 report.decoratedName.empty() ? "(no RTTI)" : report.decoratedName,
-                                report.entryRvas.size());
+                                report.entries.size());
 
-            for (size_t i = 0; i < report.entryRvas.size(); ++i)
+            for (size_t i = 0; i < report.entries.size(); ++i)
             {
-                file << std::format("      [{:2}] {:08X}\n", i, report.entryRvas[i]);
+                file << std::format("      [{:2}] {}\n", i, report.entries[i]);
             }
 
             file << "\n";

@@ -66,6 +66,16 @@ namespace Coop::Game
         // at once. Set to zero to rely on those only.
         float selfReviveSeconds = 20.f;
 
+        // Going limp where you stand, rather than standing there at zero health
+        // looking fine.
+        //
+        // ZHM5BaseCharacter declares ActivateRagdoll, RequestAnimationDriven
+        // and DeactivatePoweredRagdoll as ordinary virtuals, so this is a call
+        // through a vtable we already hold a pointer to - no address, no hook,
+        // and the same on both builds. It is what the engine does to the player
+        // on a real death, minus the death.
+        bool ragdollWhenDown = true;
+
         // How long after getting up hits are ignored.
         //
         // Standing up inside the firefight that put you down and being dropped
@@ -160,6 +170,10 @@ namespace Coop::Game
         void GoDown();
         void ApplyEngineImmunity(bool enable);
 
+        // Spends whatever GoDown and ReviveOnSceneChange asked for, on the game
+        // thread and outside the engine's own damage call.
+        void ServiceRagdoll();
+
         // Reads a damage figure out of SHitInfo. The struct's layout is
         // published for the 2012 development build and has not been confirmed
         // against retail, so this is allowed to fail and say so rather than
@@ -185,6 +199,15 @@ namespace Coop::Game
         size_t      m_patchedSlot    = 0;
         void*       m_originalEntry  = nullptr;
         ZHitman5*   m_armedFor       = nullptr;
+
+        // Ragdolling is asked for inside OnHitIntercepted, which runs on the
+        // engine's own stack halfway through its damage handling. Calling back
+        // into the character from there is asking for trouble, so the request
+        // is banked and spent in Update - one frame later, on the same thread,
+        // with the engine's call long returned.
+        bool m_ragdollPending = false;
+        bool m_ragdollActive  = false;
+        bool m_standUpPending = false;
 
         // Written from the UI thread, read and decremented on the game thread.
         // A hit landing on the frame it is armed or disarmed is not a race

@@ -57,19 +57,10 @@ namespace Coop::Game
         // .rdata, which is still a code pointer.
         constexpr size_t kExpectedEntryCount = 12;
 
-        // Offsets into SHitInfo, from the 2012 development build's headers:
-        //
-        //   ZEntityRef        m_HitEntity          +0x00  (4)
-        //   ZPhysicsObjectRef m_pHitBody           +0x04  (8)
-        //   unsigned int      m_nHitBoneIndex      +0x0C  (4)
-        //   IProjectile*      m_pProjectile        +0x10  (4)
-        //   float4            m_vHitPos            +0x20  (16, aligned)
-        //
-        // Only m_vHitPos is read, and only to place a marker. The damage
-        // figure lives behind GetBaseDamage(), which is a call we have no
-        // address for, so magnitude is not read from here at all - see
-        // DamageFromHit.
-        constexpr size_t kHitInfoHitPositionOffset = 0x20;
+        // Nothing here reads SHitInfo's fields. What it contains on the retail
+        // build, measured from 256 captured hits rather than taken from the
+        // 2012 headers - which are wrong about it - is documented where it is
+        // used, in Game/HitInspector.h, and in docs/RE-NOTES.md.
 
         // The player god-mode flag, as an offset from the game module's base.
         //
@@ -269,6 +260,11 @@ namespace Coop::Game
         // have held something unrecognisable at the moment we last looked.
         m_immunityRefused = false;
 
+        // A different character entirely, and one that is not on the floor.
+        m_ragdollPending = false;
+        m_standUpPending = false;
+        m_ragdollActive  = false;
+
         ApplyEngineImmunity(true);
 
         return true;
@@ -363,6 +359,17 @@ namespace Coop::Game
 
     void DownedState::Disarm()
     {
+        // Stand the player up before letting go of them. Unloading the mod
+        // while 47 is face down on the floor would leave the game with a
+        // problem it has no way to explain.
+        if (m_ragdollActive)
+        {
+            m_ragdollPending = false;
+            m_standUpPending = true;
+
+            ServiceRagdoll();
+        }
+
         if (m_armed && m_patchedVtable && m_originalEntry)
         {
             DWORD previousProtection = 0;
@@ -568,6 +575,53 @@ namespace Coop::Game
         m_phase         = DownedPhase::Downed;
         m_downedSeconds = 0.f;
         ++m_timesDowned;
+
+        // Banked, not called: this runs inside YouGotHit, on the engine's stack,
+        // halfway through its own damage handling.
+        m_ragdollPending = m_settings.ragdollWhenDown;
+    }
+
+    void DownedState::ServiceRagdoll()
+    {
+        if (!m_armedFor)
+        {
+            m_ragdollPending = false;
+            m_standUpPending = false;
+            m_ragdollActive  = false;
+
+            return;
+        }
+
+        auto* character = static_cast<ZHM5BaseCharacter*>(m_armedFor);
+
+        if (m_ragdollPending)
+        {
+            m_ragdollPending = false;
+
+            // What the engine does to the player on a real death: physics takes
+            // the body and it falls where it stood. Every one of these is a
+            // virtual the SDK already declares, so this needs no address.
+            character->ActivateRagdoll();
+
+            m_ragdollActive = true;
+        }
+
+        if (m_standUpPending)
+        {
+            m_standUpPending = false;
+
+            if (m_ragdollActive)
+            {
+                // Back under animation, blended rather than snapped. Order
+                // matters: ask for animation first, then let the ragdoll go, or
+                // there is a frame with nothing driving the character at all.
+                character->RequestAnimationDriven();
+                character->DeactivatePoweredRagdoll(0.4f, true);
+                character->ReleaseRagdoll();
+
+                m_ragdollActive = false;
+            }
+        }
     }
 
     void DownedState::Update(float deltaSeconds, bool engineReportsDead)
@@ -576,6 +630,10 @@ namespace Coop::Game
         {
             return;
         }
+
+        // Whatever going down or getting up asked the character to do, done
+        // here rather than where it was asked for.
+        ServiceRagdoll();
 
         // The backstop checkbox is in the panel, so it can change between
         // arming and now. Refusals are remembered, so this does not re-decide
@@ -648,6 +706,10 @@ namespace Coop::Game
         m_sinceLastHit      = 0.f;
         m_downedSeconds     = 0.f;
         m_recoveringSeconds = 0.f;
+
+        // Cancel a collapse that has not happened yet, and undo one that has.
+        m_ragdollPending = false;
+        m_standUpPending = m_ragdollActive;
     }
 
     void DownedState::ReviveOnCheckpoint()

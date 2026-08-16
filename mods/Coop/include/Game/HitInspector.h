@@ -34,6 +34,14 @@ namespace Coop::Game
     // SHitInfo, without being so much that a short one runs off its page.
     constexpr size_t kHitCaptureBytes = 0x60;
 
+    // And the projectile hanging off it at +0x0C, which is where the damage
+    // actually lives - GetBaseDamage reads the projectile's configuration, not
+    // the hit. A session's worth of hits proved the hit struct itself carries
+    // no figure that varies: everything past the normal was byte-identical
+    // across 256 of them, while this pointer was different every shot.
+    constexpr size_t kProjectileOffsetInHit  = 0x0C;
+    constexpr size_t kProjectileCaptureBytes = 0x80;
+
     struct HitCapture
     {
         uint32_t ordinal = 0;
@@ -51,6 +59,13 @@ namespace Coop::Game
         uint32_t  byteCount = 0;
 
         uint8_t bytes[kHitCaptureBytes]{};
+
+        // The projectile the hit came from, followed one level and copied.
+        // Zero when the pointer was null or unreadable, which is itself worth
+        // knowing - a melee hit would have no projectile at all.
+        uintptr_t projectile          = 0;
+        uint32_t  projectileByteCount = 0;
+        uint8_t   projectileBytes[kProjectileCaptureBytes]{};
     };
 
     // Written on the game thread from inside the vtable thunk, read on the

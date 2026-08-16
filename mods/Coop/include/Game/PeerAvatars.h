@@ -49,6 +49,17 @@ namespace Coop::Game
 
         bool  drawMarkers     = true;
         float markerSeconds   = 20.f;
+
+        // Instinct is the game's own see-through-walls view, and it already
+        // draws points of interest in it. A teammate is one, so this puts them
+        // there: brighter, and out to any distance, for as long as it is held.
+        //
+        // Only-in-instinct is off by default because it hides teammates the
+        // rest of the time, which is a big change to make on the strength of a
+        // reading nobody has confirmed yet. Turn it on and co-op stops being an
+        // always-on wallhack, which is the better game.
+        bool  instinctHighlight = true;
+        bool  instinctOnly      = false;
     };
 
     // Turns the session's raw snapshots into something drawable, and draws it.
@@ -73,6 +84,11 @@ namespace Coop::Game
 
         void Draw3D() const;
 
+        // Told once a frame, before drawing. Kept here rather than read here
+        // because Draw3D runs on the render thread and the controller belongs
+        // to the game thread.
+        void SetInstinct(bool active) { m_instinctActive = active; }
+
         // Markers are owned here because this is what already holds the
         // renderer and the world-to-screen plumbing.
         void AddMarker(const SVector3& position, const std::string& label, uint8_t peerId);
@@ -92,5 +108,7 @@ namespace Coop::Game
         AvatarSettings           m_settings;
         std::vector<AvatarView>  m_views;
         std::vector<WorldMarker> m_markers;
+
+        bool m_instinctActive = false;
     };
 }

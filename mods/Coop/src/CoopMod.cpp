@@ -1,13 +1,18 @@
 #include <imgui.h>
 
+#include <Windows.h>
+
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstring>
 #include <format>
 #include <iterator>
 #include <string>
 #include <vector>
 
+#include <Glacier/ZGraphicsSettingsManager.h>
+#include <Glacier/UI/ZHUDManager.h>
 #include <Glacier/ZLevelManager.h>
 #include <Glacier/Player/ZHitman5.h>
 #include <Glacier/ZGameLoopManager.h>
@@ -175,6 +180,74 @@ namespace
         default:
             return ImVec4(0.65f, 0.65f, 0.65f, 1.f);
         }
+    }
+
+    // Hex and floats side by side, sixteen bytes to a line. Both, because
+    // which one is meaningful is the question being asked.
+    void LogBytes(const char* indent, const uint8_t* bytes, size_t count)
+    {
+        for (size_t offset = 0; offset + 16 <= count; offset += 16)
+        {
+            const uint8_t* row = bytes + offset;
+
+            float asFloat[4] = {};
+            std::memcpy(asFloat, row, sizeof(asFloat));
+
+            Diag::Log("%s+%02zX  %02X%02X%02X%02X %02X%02X%02X%02X "
+                      "%02X%02X%02X%02X %02X%02X%02X%02X   "
+                      "%12.4f %12.4f %12.4f %12.4f",
+                      indent, offset,
+                      row[3],  row[2],  row[1],  row[0],
+                      row[7],  row[6],  row[5],  row[4],
+                      row[11], row[10], row[9],  row[8],
+                      row[15], row[14], row[13], row[12],
+                      asFloat[0], asFloat[1], asFloat[2], asFloat[3]);
+        }
+    }
+
+    // The SDK shows the OS cursor exactly when it has taken input for its own
+    // panels. That makes cursor visibility the honest test for "the player is
+    // clicking menus rather than looking around", and it needs no offsets -
+    // unlike reading ImGuiRenderer::imguiHasFocus, which is private.
+    bool CursorIsVisible()
+    {
+        CURSORINFO info{};
+        info.cbSize = sizeof(info);
+
+        if (!GetCursorInfo(&info))
+        {
+            return false;
+        }
+
+        return (info.flags & CURSOR_SHOWING) != 0;
+    }
+
+    // Centre of the game window, in screen coordinates.
+    bool WindowCentre(POINT& centreOut)
+    {
+        if (!GraphicsSettingsManager)
+        {
+            return false;
+        }
+
+        const HWND window = GraphicsSettingsManager->GetHWND();
+
+        if (!window)
+        {
+            return false;
+        }
+
+        RECT client{};
+
+        if (!GetClientRect(window, &client))
+        {
+            return false;
+        }
+
+        centreOut.x = (client.right - client.left) / 2;
+        centreOut.y = (client.bottom - client.top) / 2;
+
+        return ClientToScreen(window, &centreOut) != 0;
     }
 
     const char* StatusText(Net::SessionMode mode)
@@ -426,6 +499,11 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
     UpdateMarkerKey();
     UpdateKillFeed();
 
+    // Instinct drives how teammates are drawn, so it is read before anything
+    // draws and handed across rather than read from the render thread.
+    m_instinct.Update(deltaSeconds);
+    m_avatars.SetInstinct(m_instinct.Active());
+
     TraceWorldChanges();
     TraceKeys();
     AutoDumpWhenReady(deltaSeconds);
@@ -567,6 +645,19 @@ void CoopMod::TraceWorldChanges()
         m_tracedSection   = section;
     }
 
+    // Instinct, on the edges only. The question is whether the focus
+    // controller can be read at all and whether holding the key is visible in
+    // it - both answered by two lines rather than by a value every frame.
+    if (m_instinct.Active() != m_tracedInstinct)
+    {
+        m_tracedInstinct = m_instinct.Active();
+
+        Diag::Log("instinct %s (meter %.3f, %s)",
+                  m_tracedInstinct ? "held" : "released",
+                  m_instinct.Amount(),
+                  m_instinct.Readable() ? "readable" : "UNREADABLE");
+    }
+
     const uint8_t phase = static_cast<uint8_t>(Game::TheDownedState().Phase());
 
     if (phase != m_tracedPhase)
@@ -623,27 +714,102 @@ void CoopMod::TraceWorldChanges()
             // The whole struct, every time, in the file. This is the thing the
             // damage figure is hiding in, and a panel showing it is only useful
             // to somebody photographing their own screen.
-            for (size_t offset = 0; offset + 16 <= latest.byteCount; offset += 16)
+            LogBytes("  ", latest.bytes, latest.byteCount);
+
+            // And the projectile it came from, which is where GetBaseDamage
+            // reads. The hit struct itself was byte-identical across a whole
+            // session past the hit normal, so if a damage figure is reachable
+            // at all it is in here.
+            if (latest.projectileByteCount > 0)
             {
-                const uint8_t* row = latest.bytes + offset;
-
-                float asFloat[4] = {};
-                std::memcpy(asFloat, row, sizeof(asFloat));
-
-                Diag::Log("  +%02zX  %02X%02X%02X%02X %02X%02X%02X%02X "
-                          "%02X%02X%02X%02X %02X%02X%02X%02X   "
-                          "%12.4f %12.4f %12.4f %12.4f",
-                          offset,
-                          row[3],  row[2],  row[1],  row[0],
-                          row[7],  row[6],  row[5],  row[4],
-                          row[11], row[10], row[9],  row[8],
-                          row[15], row[14], row[13], row[12],
-                          asFloat[0], asFloat[1], asFloat[2], asFloat[3]);
+                Diag::Log("  projectile at %08X:", static_cast<unsigned>(latest.projectile));
+                LogBytes("    ", latest.projectileBytes, latest.projectileByteCount);
+            }
+            else
+            {
+                Diag::Log("  no projectile on this hit - melee or close combat");
             }
         }
 
         m_tracedHits = hits;
     }
+}
+
+void CoopMod::MouseLook(float deltaSeconds, float& yawDelta, float& pitchDelta)
+{
+    // Lifted from the cinematic camera's free look, which is the one in this
+    // set that people actually use, rather than reinvented. Three things in it
+    // are not obvious and all three matter:
+    //
+    //   1. Cursor visibility is the test, not our own panel flag. The SDK shows
+    //      the OS cursor exactly when it has taken input for its own panels, so
+    //      it is the honest answer to "is the player clicking menus", and it
+    //      needs no offsets - unlike ImGuiRenderer::imguiHasFocus, which is
+    //      private.
+    //   2. The mouse is a displacement, not a velocity. Routed through the same
+    //      axes the held keys use it would keep turning the camera after the
+    //      hand stops, at a rate scaled by frame time.
+    //   3. The cursor is sampled once a frame and quantised to whole pixels, so
+    //      the per-frame delta is often 0 or 1. Spent raw that is visible
+    //      steppiness rather than a pan, which is what the smoothing below is
+    //      for - and it smooths the displacement, so total travel is conserved
+    //      exactly and the camera still stops when the hand does.
+    float mouseYaw   = 0.f;
+    float mousePitch = 0.f;
+
+    const bool menuActive = HUDManager && HUDManager->IsPauseMenuActive();
+
+    if (m_mouseLook && !menuActive && !CursorIsVisible())
+    {
+        POINT centre{};
+
+        if (WindowCentre(centre))
+        {
+            POINT cursor{};
+
+            if (GetCursorPos(&cursor))
+            {
+                if (m_mouseLookActive)
+                {
+                    mouseYaw   += static_cast<float>(cursor.x - centre.x) * m_mouseSensitivity;
+                    mousePitch -= static_cast<float>(cursor.y - centre.y) * m_mouseSensitivity;
+                }
+
+                // Re-centred every frame so the cursor can never run out of
+                // screen, which is what makes an unbounded look possible at
+                // all. The first frame only warps, so entering the camera does
+                // not snap the view by however far the cursor happened to be.
+                SetCursorPos(centre.x, centre.y);
+
+                m_mouseLookActive = true;
+            }
+        }
+    }
+    else
+    {
+        m_mouseLookActive = false;
+    }
+
+    m_pendingMouseYaw   += mouseYaw;
+    m_pendingMousePitch += mousePitch;
+
+    const float retained = std::clamp(m_mouseSmoothing, 0.f, 0.95f);
+    const float release  = retained <= 0.f
+        ? 1.f
+        : 1.f - std::pow(retained, deltaSeconds * 60.f);
+
+    mouseYaw   = m_pendingMouseYaw   * release;
+    mousePitch = m_pendingMousePitch * release;
+
+    m_pendingMouseYaw   -= mouseYaw;
+    m_pendingMousePitch -= mousePitch;
+
+    // Spectator::Nudge works in radians; the sensitivity above is degrees per
+    // pixel, which is the unit anybody setting it would expect.
+    constexpr float kDegToRad = 0.01745329f;
+
+    yawDelta   += mouseYaw * kDegToRad;
+    pitchDelta += (m_invertMouseY ? -mousePitch : mousePitch) * kDegToRad;
 }
 
 void CoopMod::TraceKeys()
@@ -923,24 +1089,31 @@ void CoopMod::UpdateDownedFlow(float deltaSeconds)
 
     downed.Update(deltaSeconds, (m_probe.LocalState().flags & Net::SF_Dead) != 0);
 
+    // A hit landed since the last frame, so kick the red up and let it fall.
+    // Without this a hit that costs a quarter of the pool is a slightly darker
+    // edge, and four of them arriving in a second are indistinguishable from
+    // one - which is not what being shot four times should look like.
+    if (downed.HitsTaken() != m_hurtLastHit)
+    {
+        m_hurtLastHit = downed.HitsTaken();
+        m_hurtFlash   = std::min(1.f, m_hurtFlash + 0.45f);
+    }
+
+    constexpr float kFlashFadePerSecond = 1.6f;
+
+    m_hurtFlash = std::max(0.f, m_hurtFlash - kFlashFadePerSecond * deltaSeconds);
+
     if (downed.Phase() == Game::DownedPhase::Downed)
     {
-        // Playing alone there is nobody to be down for, and none of the ways
-        // back exist: no teammate will reach a checkpoint and no scene will
-        // change until you make one. Show what being down looks like, then let
-        // go, rather than trapping somebody who was only trying the mod out.
-        constexpr float kSoloDownedSeconds = 5.f;
-
-        if (!m_session.IsActive() && downed.DownedSeconds() >= kSoloDownedSeconds)
-        {
-            downed.ReviveOnSceneChange();
-            AddLogLine("Up again - nobody else in the session to wait for");
-
-            return;
-        }
-
-        // The confirm key doubles as "get up now" while down. Waiting out a
-        // timer you did not choose is not a mechanic.
+        // There used to be a second, shorter timer here: five seconds, applied
+        // when playing alone, on the theory that a solo player has nobody to
+        // wait for. What it actually did was contradict the countdown on the
+        // screen - the overlay said twenty and you were up in five, every time,
+        // because nobody testing the mod is in a session. The self-revive timer
+        // is the only one now, and it is the one being displayed.
+        //
+        // The confirm key doubles as "get up now". Waiting out a timer you did
+        // not choose is not a mechanic.
         if (m_followAction.Digital() && !m_prevFollow)
         {
             downed.ReviveOnSceneChange();
@@ -977,6 +1150,14 @@ void CoopMod::UpdateDownedFlow(float deltaSeconds)
         float yawDelta      = 0.f;
         float pitchDelta    = 0.f;
         float distanceDelta = 0.f;
+
+        // The mouse is what anybody reaches for to look around, so it drives
+        // this and the keys stay as a fallback. Taken from the cursor rather
+        // than from an input action because the binding grammar's spelling for
+        // a mouse axis is not documented anywhere we can check, and guessing it
+        // wrong would have the engine reject the whole block - which is to say
+        // every key in the mod, to add one.
+        MouseLook(deltaSeconds, yawDelta, pitchDelta);
 
         if (m_specLeft.Digital())    yawDelta      -= kTurnPerSecond * deltaSeconds;
         if (m_specRight.Digital())   yawDelta      += kTurnPerSecond * deltaSeconds;
@@ -1025,6 +1206,10 @@ void CoopMod::OnDrawUI(const bool hasFocus)
 {
     m_loaded.OnDrawUI(hasFocus);
 
+    // Before the rest: it is the game's feedback, not the mod's interface, and
+    // it belongs behind everything the mod draws on top.
+    RenderHurtOverlay();
+
     RenderHudOverlay();
 
     if (!m_isOpen || !hasFocus)
@@ -1033,6 +1218,90 @@ void CoopMod::OnDrawUI(const bool hasFocus)
     }
 
     RenderWindow();
+}
+
+void CoopMod::RenderHurtOverlay()
+{
+    Game::DownedState& downed = Game::TheDownedState();
+
+    if (!m_showHurt || !downed.Settings().enabled || !downed.IsArmed())
+    {
+        return;
+    }
+
+    // Absolution does not draw a health bar. Damage is a red vignette that
+    // closes in from the edges and a desaturation of everything inside it, and
+    // health coming back is that receding - so when this mod takes the health
+    // away from the engine, it takes the only feedback the player had with it.
+    // Which is exactly what happened: the health went down in a panel nobody
+    // had open while the screen stayed clean.
+    const float missing = 1.f - downed.HitPointsFraction();
+
+    // Below this the game would not have shown anything either.
+    constexpr float kFloor = 0.15f;
+
+    const float wound = missing <= kFloor ? 0.f : (missing - kFloor) / (1.f - kFloor);
+    const float total = std::clamp(wound + m_hurtFlash, 0.f, 1.f);
+
+    if (total <= 0.001f)
+    {
+        return;
+    }
+
+    ImDrawList* draw = ImGui::GetBackgroundDrawList();
+
+    if (!draw)
+    {
+        return;
+    }
+
+    // DisplaySize rather than the viewport API, which not every ImGui the SDK
+    // might be built against exposes the same way.
+    const ImVec2 size = ImGui::GetIO().DisplaySize;
+
+    if (size.x <= 0.f || size.y <= 0.f)
+    {
+        return;
+    }
+
+    const ImVec2 top{ 0.f, 0.f };
+
+    const float bottomY = size.y;
+    const float rightX  = size.x;
+
+    // How far in the red reaches. A quarter of the screen when nearly dead,
+    // which is about where the game's own effect sits.
+    const float depthX = size.x * 0.28f * total;
+    const float depthY = size.y * 0.34f * total;
+
+    const float alpha = std::clamp(0.10f + 0.62f * total, 0.f, 0.80f);
+
+    const ImU32 solid = ImGui::GetColorU32(ImVec4(0.42f, 0.02f, 0.02f, alpha));
+    const ImU32 clear = ImGui::GetColorU32(ImVec4(0.42f, 0.02f, 0.02f, 0.f));
+
+    // Four gradients rather than a texture: no asset to ship, no shader, and
+    // ImGui interpolates the corners for us. The corners double up, which is
+    // what makes them darker than the edges - which is also what the real
+    // effect does.
+    draw->AddRectFilledMultiColor(ImVec2(top.x, top.y), ImVec2(rightX, top.y + depthY),
+                                  solid, solid, clear, clear);
+
+    draw->AddRectFilledMultiColor(ImVec2(top.x, bottomY - depthY), ImVec2(rightX, bottomY),
+                                  clear, clear, solid, solid);
+
+    draw->AddRectFilledMultiColor(ImVec2(top.x, top.y), ImVec2(top.x + depthX, bottomY),
+                                  solid, clear, clear, solid);
+
+    draw->AddRectFilledMultiColor(ImVec2(rightX - depthX, top.y), ImVec2(rightX, bottomY),
+                                  clear, solid, solid, clear);
+
+    // Down is the whole screen going, not just the edges.
+    if (downed.IsDowned())
+    {
+        const ImU32 wash = ImGui::GetColorU32(ImVec4(0.28f, 0.01f, 0.01f, 0.34f));
+
+        draw->AddRectFilled(top, ImVec2(rightX, bottomY), wash);
+    }
 }
 
 void CoopMod::RenderHudOverlay()
@@ -1332,6 +1601,42 @@ void CoopMod::RenderPlayersTab()
     ImGui::Checkbox("Distance on the nameplate", &settings.drawDistance);
     ImGui::SliderFloat("Draw out to", &settings.maxDrawDistance, 25.f, 500.f, "%.0f m");
     ImGui::Checkbox("HUD overlay", &m_showOverlay);
+
+    ImGui::SeparatorText("Instinct");
+
+    ImGui::Checkbox("Mark teammates in Instinct", &settings.instinctHighlight);
+
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetTooltip(
+            "Instinct is the game's own see-through-walls view and it already\n"
+            "draws points of interest in it. This puts teammates there too: a\n"
+            "diamond over the head, in their colour, at any distance.");
+    }
+
+    ImGui::Checkbox("And only there", &settings.instinctOnly);
+
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetTooltip(
+            "Teammates disappear the rest of the time. This is the better game -\n"
+            "co-op stops being a permanent wallhack and knowing where the others\n"
+            "are costs you Instinct, like everything else does.\n\n"
+            "Off by default because detecting Instinct means reading the focus\n"
+            "controller, and nobody has confirmed that reading yet. If the state\n"
+            "below never says 'held' while you hold it, leave this off.");
+    }
+
+    ImGui::Text("Instinct: %s",
+                !m_instinct.Readable() ? "cannot read the focus controller"
+              : m_instinct.Active()    ? "held"
+                                       : "not held");
+
+    if (m_instinct.Readable())
+    {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(meter %.2f)", m_instinct.Amount());
+    }
 }
 
 void CoopMod::RenderRulesTab()
@@ -1397,6 +1702,18 @@ void CoopMod::RenderRulesTab()
         ImGui::SliderFloat("Immune after getting up", &downed.recoveryGraceSeconds,
                            0.f, 15.f, "%.1f s");
 
+        ImGui::Checkbox("Go limp when you go down", &downed.ragdollWhenDown);
+
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip(
+                "Hands the body to physics the way the engine does on a real\n"
+                "death, so 47 falls where he stood instead of standing there at\n"
+                "zero health looking fine. Getting up blends back to animation.\n\n"
+                "If it ever leaves you stuck on the floor, turn it off - and the\n"
+                "log will say exactly which calls ran before it happened.");
+        }
+
         ImGui::Checkbox("Also set the engine's god-mode flag",
                         &downed.alsoUseEngineImmunity);
 
@@ -1424,6 +1741,30 @@ void CoopMod::RenderRulesTab()
 
         ImGui::TextDisabled("Every hit costs the same: the real figure lives behind");
         ImGui::TextDisabled("SHitInfo::GetBaseDamage, which has no known address yet.");
+    }
+
+    ImGui::SeparatorText("Being shot at, and watching");
+
+    ImGui::Checkbox("Red screen when you are hurt", &m_showHurt);
+
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetTooltip(
+            "Absolution has no health bar - damage is a red vignette closing in\n"
+            "from the edges. Taking the health off the engine took that with it,\n"
+            "so this draws it back from the pool the mod owns. Fake, and the\n"
+            "only feedback there is.");
+    }
+
+    ImGui::Checkbox("Mouse look while spectating", &m_mouseLook);
+
+    if (m_mouseLook)
+    {
+        ImGui::SliderFloat("Sensitivity", &m_mouseSensitivity, 0.02f, 0.60f, "%.2f deg/px");
+        ImGui::SliderFloat("Smoothing", &m_mouseSmoothing, 0.f, 0.95f, "%.2f");
+        ImGui::Checkbox("Invert Y", &m_invertMouseY);
+
+        ImGui::TextDisabled("Arrow keys still work, and PgUp/PgDn move in and out.");
     }
 }
 

@@ -29,8 +29,12 @@ namespace Coop::Game
         // cannot be identified this way.
         std::string decoratedName;
 
-        // Entries, as RVAs, up to where the table stops looking like code.
-        std::vector<uintptr_t> entryRvas;
+        // Entries up to where the table stops looking like code, each named by
+        // the module it is in. Not bare offsets: the first dump taken in the
+        // game printed our own replacement entry as a game address, because
+        // everything was being reported relative to HMA.exe whether it belonged
+        // to it or not.
+        std::vector<std::string> entries;
     };
 
     // Every vtable pointer in the first `searchBytes` of an object.

@@ -517,6 +517,45 @@ confirmation; one is an observation.
 
 ---
 
+## 2d. Confirmed in the game, on the retail build
+
+One session with the logging on settled four things that had been assumptions.
+
+**`ZHitman5` carries RTTI.** §2 assumed it did not and leaned on inherited
+vtables instead. Walking the object at runtime and following each vtable's
+`[-1]` complete object locator gives `.?AVZHitman5@@` for all five, with entry
+counts that match the headers exactly:
+
+```
++0x00  00AB790C  64 entries   ZEntityImpl + ZHM5BaseCharacter's own
++0x08  00A86938   5           IHM5BaseCharacter
++0x0C  00AA063C  12           IBaseCharacter      <- YouGotHit is slot 5
++0x10  00A965A0  11           IMorphemeCutSequenceAnimatable
++0x14  00A7B4D8   3           IBoneCollidable
+```
+
+Slot 5 of the `+0x0C` table read as an address inside `Coop.dll` in the dump,
+which is the mod's own replacement entry looking back at us. That is the
+interception confirmed from the outside.
+
+**One caller.** All 256 hits came from `HMA.exe+00219A71`. `YouGotHit` is only
+ever reached through a vtable, which is why §2's caller search found nothing;
+the mod standing in the call can just read its own return address.
+
+**The engine drops the dead from its alive-actor list.** 19 actor deaths in a
+session: 19 seen by the actor leaving `ZActorManager`'s list, **zero** seen by
+`IsDead()` becoming true on a listed actor. The list means what its name says.
+Anything watching for a flag to flip will wait forever.
+
+**Close combat is not in this path.** Nothing that happened in a close-combat
+sequence produced a `YouGotHit` call at all, so a mod that intercepts damage
+there intercepts nothing, and with god mode on the engine cannot apply it
+either — the player is simply immune in close combat. The `CC*` names in the
+configuration (`CCHitmanDamage`, `CCChainFailDamage`, `CCCounterFailDamage`)
+say where that damage is decided, and it is somewhere else entirely.
+
+---
+
 ## 2c. Input, and why a hotkey can look dead
 
 Three separate things make a bound key do nothing, and the first two are not
@@ -576,6 +615,35 @@ float4            m_vHitNormal           +0x30
 SExplodeInfo      m_Explosion            +0x40
 unsigned int      m_nActorDeathType      ...
 ```
+
+**And it is wrong for retail.** 256 hits captured whole in one session, all
+from `HMA.exe+00219A71`, give this instead:
+
+```
++0x00  ZEntityRef    m_HitEntity      constant across every hit - it is us
++0x04  (zero throughout)
++0x08  unsigned int  bone index       varies: 0x03, 0x04, 0x5D, 0x40...
++0x0C  IProjectile*  m_pProjectile    a different one every shot
++0x10  float4        m_vHitPos        w = 1.0, and a plausible world position
++0x20  float4        m_vHitNormal     w = 0.0, and unit length to 4 decimals
++0x30  onwards       byte-identical across all 256
+```
+
+Retail is the dev layout shifted back by `0x10`: `m_pHitBody` is four bytes
+here, not eight. The mod had been reading `+0x20` as the hit position, which on
+retail is the normal.
+
+The tail from `+0x30` reads `600.0, 200.0, 6, 0.5, -100.0, 1.7, 6, 1.0, 1.0,
+1.0, 5` and never moved, across four weapons and two dozen bone indices. Either
+it is `SExplodeInfo` sitting at its defaults for non-explosive hits, or the
+struct ends before it and that is the caller's stack frame — the address was
+`0019E1D0` every single time, so a stable frame is entirely possible.
+
+**Either way there is no damage figure in the struct.** `GetBaseDamage` reads
+the projectile at `+0x0C`, and that is the only field that changes per shot in
+a way that could carry one. The mod follows it now and captures `0x80` bytes
+from it on every hit, which is where the number has to be if it is reachable at
+all without disassembling `HMA.exe+00219A71`.
 
 Anchor: whatever calls `YouGotHit` builds one of these. Work outwards from the
 callers of the slot found in §2.

@@ -17,6 +17,7 @@
 #include "Game/DownedState.h"
 #include "Game/Spectator.h"
 #include "Game/ConfigVars.h"
+#include "Game/Instinct.h"
 
 #include "UI/LoadedMarker.h"
 #include "Diag/FrameCost.h"
@@ -94,6 +95,17 @@ private:
     // answered by the file rather than by watching a row of indicators.
     void TraceKeys();
 
+    // Mouse movement while spectating, added to whatever the keys contributed.
+    // Ported from the cinematic camera's free look rather than rewritten -
+    // that one is the version people use and it has the details right.
+    void MouseLook(float deltaSeconds, float& yawDelta, float& pitchDelta);
+
+    // The red that says you are being shot, and the fake health it is drawn
+    // from. Absolution has no health bar: damage is a red screen that closes
+    // in, so a mod that owns the health has to own that too or the player is
+    // taking damage with no way to see it.
+    void RenderHurtOverlay();
+
     void AddLogLine(const std::string& line);
     std::string DescribeEvent(const Coop::Net::EventMessage& event) const;
     std::string PeerName(uint8_t peerId) const;
@@ -104,6 +116,7 @@ private:
     Coop::Game::PeerAvatars m_avatars;
     Coop::Game::Spectator   m_spectator;
     Coop::Game::ConfigVars  m_configVars;
+    Coop::Game::Instinct    m_instinct;
 
     // The same two every mod in this set carries: the line on the main menu
     // that says what is installed, and a per-frame cost the log can answer
@@ -176,6 +189,26 @@ private:
     bool     m_tracedArmed     = false;
     uint32_t m_tracedDeaths    = 0;
     uint8_t  m_tracedPhase     = 0xFF;
+    bool     m_tracedInstinct  = false;
+
+    // --- Spectator mouse look ---------------------------------------------
+
+    bool  m_mouseLook        = true;
+    bool  m_invertMouseY     = false;
+    float m_mouseSensitivity = 0.15f;   // degrees per pixel
+    float m_mouseSmoothing   = 0.5f;    // fraction of the bank kept per frame
+
+    bool  m_mouseLookActive   = false;
+    float m_pendingMouseYaw   = 0.f;
+    float m_pendingMousePitch = 0.f;
+
+    // --- Hurt overlay ------------------------------------------------------
+
+    // Rises on every hit and falls on its own, so a hit that costs a quarter of
+    // the pool still reads as a hit rather than as a slightly darker edge.
+    bool     m_showHurt    = true;
+    float    m_hurtFlash   = 0.f;
+    uint32_t m_hurtLastHit = 0;
 
     // One entry per bound action, in the order the binding table declares them.
     bool  m_tracedKeys[9]    = {};

@@ -93,6 +93,32 @@ namespace Coop::Game
             }
         }
 
+        // One level further, to the projectile. This is the object
+        // GetBaseDamage reads, so if a damage number exists anywhere reachable
+        // from a hit, it is in here rather than in the hit itself.
+        if (capture.readable && capture.byteCount > kProjectileOffsetInHit + sizeof(void*))
+        {
+            uintptr_t projectile = 0;
+            memcpy(&projectile, capture.bytes + kProjectileOffsetInHit, sizeof(projectile));
+
+            // The game is 32-bit, so anything outside user space is not a
+            // pointer and following it would only find an access violation.
+            if (projectile >= 0x10000 && projectile < 0x7FFF0000)
+            {
+                capture.projectile = projectile;
+
+                for (size_t want = kProjectileCaptureBytes; want >= 0x10; want /= 2)
+                {
+                    if (CopyGuarded(reinterpret_cast<const void*>(projectile),
+                                    capture.projectileBytes, want))
+                    {
+                        capture.projectileByteCount = static_cast<uint32_t>(want);
+                        break;
+                    }
+                }
+            }
+        }
+
         const Threading::WriteGuard guard(m_lock);
 
         capture.ordinal = ++m_total;

@@ -278,6 +278,17 @@ namespace Coop::Game
             DrawMarkers(*renderer);
         }
 
+        // Instinct is the game's see-through-walls view and it already draws
+        // points of interest. A teammate is one, so while it is held they are
+        // drawn as one: at any distance, and without the range cutoff that
+        // keeps them from cluttering the screen the rest of the time.
+        const bool instinct = m_instinctActive && m_settings.instinctHighlight;
+
+        if (m_settings.instinctOnly && !instinct)
+        {
+            return;
+        }
+
         for (const AvatarView& view : m_views)
         {
             // Somebody in another chapter has a position, but it is a position
@@ -287,12 +298,12 @@ namespace Coop::Game
                 continue;
             }
 
-            if (view.distance > m_settings.maxDrawDistance)
+            if (!instinct && view.distance > m_settings.maxDrawDistance)
             {
                 continue;
             }
 
-            const SVector4 colour = ColourForPeer(view.peerId, view.stale);
+            SVector4 colour = ColourForPeer(view.peerId, view.stale);
 
             const SVector3 feet(view.position.x, view.position.y, view.position.z);
             const SVector3 head(view.position.x, view.position.y,
@@ -301,6 +312,29 @@ namespace Coop::Game
             if (m_settings.drawBeam)
             {
                 renderer->DrawLine3D(feet, head, colour, colour);
+
+                // In Instinct, a diamond over the head - the shape the game
+                // uses for the things it wants you to notice through a wall.
+                if (instinct)
+                {
+                    constexpr float kSize = 0.28f;
+
+                    const SVector3 top   (head.x, head.y, head.z + kSize * 2.f);
+                    const SVector3 left  (head.x - kSize, head.y, head.z + kSize);
+                    const SVector3 right (head.x + kSize, head.y, head.z + kSize);
+                    const SVector3 front (head.x, head.y - kSize, head.z + kSize);
+                    const SVector3 back  (head.x, head.y + kSize, head.z + kSize);
+
+                    renderer->DrawLine3D(top, left,  colour, colour);
+                    renderer->DrawLine3D(top, right, colour, colour);
+                    renderer->DrawLine3D(top, front, colour, colour);
+                    renderer->DrawLine3D(top, back,  colour, colour);
+
+                    renderer->DrawLine3D(left,  front, colour, colour);
+                    renderer->DrawLine3D(front, right, colour, colour);
+                    renderer->DrawLine3D(right, back,  colour, colour);
+                    renderer->DrawLine3D(back,  left,  colour, colour);
+                }
 
                 // A short spur in the direction they are facing, so you can
                 // tell at a glance which way a teammate is looking.
