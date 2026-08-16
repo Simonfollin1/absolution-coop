@@ -334,8 +334,9 @@ namespace Coop::Game
 
         for (const HitCapture& capture : captures)
         {
-            file << std::format("\n  hit {} at {:08X}, called from +{:08X}{}\n",
+            file << std::format("\n  hit {} at {:08X}, called from +{:08X}, {} bytes read{}\n",
                                 capture.ordinal, capture.address, capture.callerRva,
+                                capture.byteCount,
                                 capture.readable ? "" : "  (UNREADABLE)");
 
             if (!capture.readable)
@@ -343,7 +344,7 @@ namespace Coop::Game
                 continue;
             }
 
-            for (size_t i = 0; i < kHitCaptureBytes; i += 16)
+            for (size_t i = 0; i + 16 <= capture.byteCount; i += 16)
             {
                 file << std::format("    +{:02X} ", i);
 

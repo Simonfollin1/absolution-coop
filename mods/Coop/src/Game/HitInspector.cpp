@@ -75,9 +75,22 @@ namespace Coop::Game
 
         // Outside the lock: this is the part that can fault, and holding a lock
         // across a structured exception is how a deadlock gets written.
+        //
+        // Backing off rather than giving up, because a struct that ends near
+        // the top of a page would otherwise come back as nothing at all - and
+        // the first sixteen bytes are worth more than a failure.
         if (hitInfo)
         {
-            capture.readable = CopyGuarded(hitInfo, capture.bytes, kHitCaptureBytes);
+            for (size_t want = kHitCaptureBytes; want >= 0x10; want /= 2)
+            {
+                if (CopyGuarded(hitInfo, capture.bytes, want))
+                {
+                    capture.readable  = true;
+                    capture.byteCount = static_cast<uint32_t>(want);
+
+                    break;
+                }
+            }
         }
 
         const Threading::WriteGuard guard(m_lock);
@@ -127,15 +140,20 @@ namespace Coop::Game
 
         const Threading::ReadGuard guard(m_lock);
 
+        const size_t offset = dwordIndex * sizeof(uint32_t);
+
         for (const HitCapture& capture : m_captures)
         {
-            if (!capture.readable)
+            // A short capture has nothing to say about an offset it never
+            // reached, and counting its zeroes as a value would make every
+            // slot past the truncation look like it varies.
+            if (!capture.readable || offset + sizeof(uint32_t) > capture.byteCount)
             {
                 continue;
             }
 
             uint32_t value = 0;
-            memcpy(&value, capture.bytes + dwordIndex * sizeof(uint32_t), sizeof(value));
+            memcpy(&value, capture.bytes + offset, sizeof(value));
 
             if (std::find(values.begin(), values.end(), value) == values.end())
             {

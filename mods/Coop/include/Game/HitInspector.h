@@ -42,10 +42,13 @@ namespace Coop::Game
         // Ghidra as base + this.
         uintptr_t callerRva = 0;
 
-        // The struct's own address, and whether reading it worked. A hit whose
-        // reference could not be read is worth seeing rather than hiding.
-        uintptr_t address  = 0;
-        bool      readable = false;
+        // The struct's own address, and how much of it came back. A hit whose
+        // reference could not be read is worth seeing rather than hiding, and
+        // a short read is worth distinguishing from a failed one: SHitInfo may
+        // simply end near the top of a page.
+        uintptr_t address   = 0;
+        bool      readable  = false;
+        uint32_t  byteCount = 0;
 
         uint8_t bytes[kHitCaptureBytes]{};
     };
