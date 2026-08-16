@@ -9,7 +9,7 @@ building locally.
 ```bat
 git clone --recurse-submodules https://github.com/pavledev/HitmanAbsolutionSDK.git sdk
 git clone https://github.com/Simonfollin1/absolution-coop.git mod
-xcopy /E /I mod\coop sdk\Mods\Coop
+xcopy /E /I mod sdk\Mods\Coop
 ```
 
 Add `Coop` to the `MODS` list in `sdk/CMakeLists.txt`.

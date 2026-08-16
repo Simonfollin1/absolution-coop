@@ -7,18 +7,18 @@ on:
   pull_request:
 
 env:
-  # MSVC 14.40 (VS 2022 17.10) made std::mutex's constructor constexpr, and a
-  # binary built with it reads a null pointer inside std::mutex::lock when it
-  # runs against a Visual C++ redistributable older than 14.40. Plenty of
-  # machines still carry the 2015 one.
+  # MSVC 14.40 made std::mutex's constructor constexpr, and a binary built with
+  # it reads a null pointer inside std::mutex::lock when it runs against a
+  # Visual C++ redistributable older than 14.40. Plenty of machines still carry
+  # the 2015 one.
   #
-  # This matters more here than it looks: the co-op mod owns a std::thread and
-  # several std::mutex, and DirectXTK takes one behind everything the SDK
-  # draws. The failure lands deep inside someone else's code with nothing of
-  # ours on the stack, so it is not a thing to leave to a player to diagnose.
+  # This matters here: the mod owns a std::thread and several std::mutex, and
+  # DirectXTK takes one behind everything the SDK draws. The failure lands deep
+  # inside somebody else's code with nothing of ours on the stack, so it is not
+  # a thing to leave a player to diagnose.
   #
   # cl.exe reads CL for extra options, which is how this reaches vcpkg's own
-  # compilation of DirectXTK as well as our targets - a CMake flag would not.
+  # build of DirectXTK as well as our target. A CMake flag would not.
   CL: /D_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR
 
 jobs:
@@ -26,7 +26,7 @@ jobs:
     runs-on: windows-2022
 
     steps:
-      - name: Checkout mods
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           path: mod
@@ -44,21 +44,16 @@ jobs:
           Write-Host "SDK commit: $sha"
           "SDK_COMMIT=$sha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Place mods into SDK
+      - name: Place the mod into the SDK tree
         shell: pwsh
-        run: |
-          # SpeedrunToolkit is the repository root; Coop is its own folder.
-          Copy-Item -Recurse mod sdk/Mods/SpeedrunToolkit
-          Copy-Item -Recurse mod/coop sdk/Mods/Coop
+        run: Copy-Item -Recurse mod sdk/Mods/Coop
 
-      - name: Add mods to SDK MODS list
+      - name: Add Coop to the SDK MODS list
         shell: pwsh
         run: |
           $path = "sdk/CMakeLists.txt"
           $txt  = Get-Content $path -Raw
-          foreach ($m in @("SpeedrunToolkit", "Coop")) {
-            $txt = $txt -replace '(set\(MODS\s*\r?\n)', "`$1    $m`n"
-          }
+          $txt  = $txt -replace '(set\(MODS\s*\r?\n)', "`$1    Coop`n"
           Set-Content $path $txt -NoNewline
 
       - name: Patch SDK Logger.cpp (missing chrono include for MSVC 19.44+)
@@ -77,7 +72,7 @@ jobs:
           git clone --depth 1 https://github.com/microsoft/vcpkg.git sdk/vcpkg
           .\sdk\vcpkg\bootstrap-vcpkg.bat -disableMetrics
 
-      # /MAP makes the linker emit a symbol map next to every DLL. Crash reports
+      # /MAP makes the linker emit a symbol map next to the DLL. Crash reports
       # from players are raw "module+0xRVA" offsets, and without a map there is
       # no way to turn one back into a function name.
       - name: Configure CMake (x86 / Win32)
@@ -89,22 +84,20 @@ jobs:
             -DVCPKG_TARGET_TRIPLET=x86-windows `
             -DCMAKE_SHARED_LINKER_FLAGS="/MAP /MAPINFO:EXPORTS"
 
-      - name: Build proxy loader, SDK and mods
-        run: cmake --build build --config Release --target DirectInputProxy HitmanAbsolutionSDK SpeedrunToolkit Coop
+      - name: Build
+        run: cmake --build build --config Release --target DirectInputProxy HitmanAbsolutionSDK Coop
 
       # ---- Package ----------------------------------------------------------
       #
-      # Three things the previous version of this workflow got wrong, all of
-      # which meant the archive it produced could not work at all:
+      # Three things an earlier version of this got wrong, each of which alone
+      # meant nothing loaded:
       #
-      #   1. mods.ini was written to mods\. ModManager::LoadAllMods reads it
-      #      from the process working directory - the game root - so it was
-      #      never found and no mod was ever loaded.
-      #   2. mods.ini was a plain list of names. LoadAllMods walks the ini's
+      #   1. mods.ini went to mods\. ModManager::LoadAllMods reads it from the
+      #      process working directory, which is the game root.
+      #   2. It was a plain list of names. LoadAllMods walks the ini's
       #      *sections*, so a mod has to appear as [Name].
-      #   3. Only dinput8.dll and the mod were shipped. The loader needs
-      #      HitmanAbsolutionSDK.dll and its own dependencies, none of which
-      #      were in the archive.
+      #   3. Only the proxy and the mod shipped. HitmanAbsolutionSDK.dll, which
+      #      the proxy exists to load, was not in the archive at all.
 
       - name: Assemble package
         shell: pwsh
@@ -138,7 +131,6 @@ jobs:
           # The real DirectInput, which the proxy forwards everything to.
           Copy-Item "C:\Windows\SysWOW64\dinput8.dll" "$pkg/dinput8_original.dll"
 
-          # The loader itself, and what it links against.
           CopyBuilt "HitmanAbsolutionSDK.dll" "$pkg/" $true
           CopyBuilt "DirectXTK.dll"           "$pkg/" $false
           CopyBuilt "minhook.x32.dll"         "$pkg/" $false
@@ -155,14 +147,11 @@ jobs:
             }
           }
 
-          # The mods.
-          CopyBuilt "SpeedrunToolkit.dll" "$pkg/mods/" $true
-          CopyBuilt "Coop.dll"            "$pkg/mods/" $true
-
-          Copy-Item "mod/coop/Coop.ini" "$pkg/mods/Coop.ini"
+          CopyBuilt "Coop.dll" "$pkg/mods/" $true
+          Copy-Item "mod/Coop.ini" "$pkg/mods/Coop.ini"
 
           # Fonts and icons the overlay draws with, plus the property and enum
-          # registries. HashMap.txt is deliberately left out - it is 200k
+          # registries. HashMap.txt is left out deliberately: it is 200k
           # resource names, the SDK handles its absence, and it doubles the
           # download.
           if (Test-Path "sdk/assets") {
@@ -170,10 +159,8 @@ jobs:
             Copy-Item -Recurse "sdk/assets/*" "$pkg/assets/" -Exclude "HashMap.txt"
           }
 
-          # mods.ini: game root, one ini section per mod. LoadAllMods loads
-          # only the sections whose DLL is actually present in mods\ and skips
-          # the rest silently, so naming both is free.
-          Set-Content "$pkg/mods.ini" "[SpeedrunToolkit]`n[Coop]`n" -NoNewline
+          # Game root, one ini section per mod.
+          Set-Content "$pkg/mods.ini" "[Coop]`n" -NoNewline
 
           Get-ChildItem -Recurse $pkg | Select-Object FullName
 
@@ -193,27 +180,25 @@ jobs:
         with:
           files: AbsolutionCoop.zip
           body: |
-            ## Installation
+            ## Install
 
-            1. Ladda ner `AbsolutionCoop.zip` nedan.
-            2. Hitta mappen där `HMA.exe` ligger.
-               Steam: högerklicka spelet → Hantera → Bläddra bland lokala filer.
-               GOG: `...\Hitman Absolution\retail\`
-            3. Extrahera **innehållet** i zip-filen direkt dit, så att
-               `dinput8.dll` och `mods.ini` hamnar bredvid `HMA.exe`.
-            4. Starta spelet. `~` öppnar SDK-panelen, `F6` öppnar co-op.
+            Extract the contents of `AbsolutionCoop.zip` into the folder
+            `HMA.exe` lives in, so that `dinput8.dll` and `mods.ini` end up
+            next to it.
 
-            ## Co-op
+            - Steam: right-click the game, Manage, Browse local files
+            - GOG: `...\Hitman Absolution\retail\`
 
-            Alla kör sin egen kopia av nivån. En är värd — bara den behöver en
-            nåbar UDP-port. Öppna panelen, sätt namn och port, tryck Host; de
-            andra skriver in värdens adress och trycker Join.
+            Start the game. `~` opens the SDK panel, `F6` opens co-op.
 
-            NPC:er, kroppar, dörrar och larm är lokala för varje spelare. Två
-            personer i samma rum ser samma nivå och olika vakter. Det är en
-            följd av att motorn inte är deterministisk, inte en bugg.
+            ## Playing
 
-            Byggd mot HitmanAbsolutionSDK `${{ env.SDK_COMMIT }}`.
+            One player hosts, and only the host needs a reachable UDP port.
+            Everyone else types the host's `address:port`.
 
-            Kräver Hitman: Absolution 1.0.447.0 och 32-bitars Visual C++
-            2015–2022 redistributable. Använd inte i Contracts.
+            NPCs are not shared. Two people in the same room see the same level
+            and different guards.
+
+            Built against HitmanAbsolutionSDK `${{ env.SDK_COMMIT }}`.
+            Needs 1.0.447.0 and the 32-bit Visual C++ 2015-2022 redistributable.
+            Do not use it in Contracts.
