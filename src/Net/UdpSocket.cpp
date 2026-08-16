@@ -2,10 +2,16 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
-// SIO_UDP_CONNRESET lives here rather than in winsock2.h or ws2tcpip.h, which
-// is not obvious and is exactly the kind of thing that only shows up once
-// somebody tries to build it.
 #include <mstcpip.h>
+
+// SIO_UDP_CONNRESET is documented as living in mstcpip.h, and including that
+// header did not define it on the SDK this builds against. Rather than guess
+// at which header or version guard is responsible, define it here: the value
+// is a stable, documented ioctl code, and _WSAIOW and IOC_VENDOR both come
+// from winsock2.h above.
+#ifndef SIO_UDP_CONNRESET
+#define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
+#endif
 
 #include <cstdio>
 #include <cstdlib>
