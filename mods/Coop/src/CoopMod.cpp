@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstring>
 #include <format>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -352,6 +353,11 @@ void CoopMod::InstallBindings()
 
 void CoopMod::AddLogLine(const std::string& line)
 {
+    // Everything the panel says goes in the file too. The panel scrolls, the
+    // panel is behind a key that only works when the panel is closed, and the
+    // panel cannot be sent to anybody. The file is none of those things.
+    Diag::Log("%s", line.c_str());
+
     m_log.push_back(line);
 
     while (m_log.size() > kLogCapacity)
@@ -421,6 +427,8 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
     UpdateKillFeed();
 
     TraceWorldChanges();
+    TraceKeys();
+    AutoDumpWhenReady(deltaSeconds);
 
     m_passThroughWaited += deltaSeconds;
     UpdatePlayerDiff();
@@ -559,6 +567,19 @@ void CoopMod::TraceWorldChanges()
         m_tracedSection   = section;
     }
 
+    const uint8_t phase = static_cast<uint8_t>(Game::TheDownedState().Phase());
+
+    if (phase != m_tracedPhase)
+    {
+        Diag::Log("player is now %s (health %.0f, %u hits, downed %u times)",
+                  phase == 1 ? "DOWN" : phase == 2 ? "up again, briefly immune" : "up",
+                  Game::TheDownedState().HitPoints(),
+                  Game::TheDownedState().HitsTaken(),
+                  Game::TheDownedState().TimesDowned());
+
+        m_tracedPhase = phase;
+    }
+
     if (Game::TheDownedState().IsArmed() != m_tracedArmed)
     {
         m_tracedArmed = Game::TheDownedState().IsArmed();
@@ -593,14 +614,124 @@ void CoopMod::TraceWorldChanges()
         {
             const Game::HitCapture& latest = captures.front();
 
-            Diag::Log("hit %u: SHitInfo at %08X, called from +%08X, health now %.0f",
+            Diag::Log("hit %u: SHitInfo at %08X, called from HMA.exe+%08X, %u bytes, "
+                      "health now %.0f",
                       latest.ordinal, static_cast<unsigned>(latest.address),
-                      static_cast<unsigned>(latest.callerRva),
+                      static_cast<unsigned>(latest.callerRva), latest.byteCount,
                       Game::TheDownedState().HitPoints());
+
+            // The whole struct, every time, in the file. This is the thing the
+            // damage figure is hiding in, and a panel showing it is only useful
+            // to somebody photographing their own screen.
+            for (size_t offset = 0; offset + 16 <= latest.byteCount; offset += 16)
+            {
+                const uint8_t* row = latest.bytes + offset;
+
+                float asFloat[4] = {};
+                std::memcpy(asFloat, row, sizeof(asFloat));
+
+                Diag::Log("  +%02zX  %02X%02X%02X%02X %02X%02X%02X%02X "
+                          "%02X%02X%02X%02X %02X%02X%02X%02X   "
+                          "%12.4f %12.4f %12.4f %12.4f",
+                          offset,
+                          row[3],  row[2],  row[1],  row[0],
+                          row[7],  row[6],  row[5],  row[4],
+                          row[11], row[10], row[9],  row[8],
+                          row[15], row[14], row[13], row[12],
+                          asFloat[0], asFloat[1], asFloat[2], asFloat[3]);
+            }
         }
 
         m_tracedHits = hits;
     }
+}
+
+void CoopMod::TraceKeys()
+{
+    // Named in the order the binding table declares them, so a line in the log
+    // reads the same as a row in the panel.
+    static const char* const kNames[] = {
+        "toggle", "follow", "marker",
+        "spectate left", "spectate right", "spectate up", "spectate down",
+        "spectate closer", "spectate further",
+    };
+
+    ZInputAction* const actions[] = {
+        &m_toggleAction, &m_followAction, &m_markerAction,
+        &m_specLeft, &m_specRight, &m_specUp, &m_specDown,
+        &m_specCloser, &m_specFurther,
+    };
+
+    static_assert(std::size(kNames) == std::size(actions));
+
+    for (size_t i = 0; i < std::size(actions); ++i)
+    {
+        const bool down = actions[i]->Digital();
+
+        if (down != m_tracedKeys[i])
+        {
+            Diag::Log("key: %s %s", kNames[i], down ? "down" : "up");
+
+            m_tracedKeys[i] = down;
+        }
+    }
+}
+
+void CoopMod::AutoDumpWhenReady(float deltaSeconds)
+{
+    if (m_autoDumped)
+    {
+        return;
+    }
+
+    if (!m_probe.HasPlayer())
+    {
+        // A level that went away before the timer ran out does not count.
+        m_secondsWithPlayer = 0.f;
+
+        return;
+    }
+
+    m_secondsWithPlayer += deltaSeconds;
+
+    // Long enough that the scene has settled and the actors are listed, short
+    // enough that it happens before anybody does anything interesting.
+    constexpr float kSettleSeconds = 6.f;
+
+    if (m_secondsWithPlayer < kSettleSeconds)
+    {
+        return;
+    }
+
+    m_autoDumped = true;
+
+    // The configuration walk is the expensive part of the dump and it is only
+    // done on demand elsewhere. Doing it here is what makes the file complete
+    // without anybody having visited the Engine tab first.
+    if (!m_configVars.Walked())
+    {
+        m_configVars.Refresh();
+        Diag::Log("config: %s", m_configVars.Diagnostic().c_str());
+    }
+
+    std::string error;
+
+    const std::string path = Game::WriteDump(
+        m_configVars, m_probe, m_bindingExpression,
+        std::vector<std::string>(m_log.begin(), m_log.end()), error);
+
+    if (path.empty())
+    {
+        Diag::Log("automatic dump failed: %s", error.c_str());
+        AddLogLine(std::format("Automatic dump failed: {}", error));
+
+        return;
+    }
+
+    m_lastDumpPath = path;
+
+    Diag::Log("automatic dump written to %s", path.c_str());
+    AddLogLine(std::format("Wrote {} by itself - no need to press anything", path));
 }
 
 void CoopMod::UpdatePlayerDiff()
@@ -1370,11 +1501,20 @@ void CoopMod::RenderResearchTab()
         "Things only a running game can answer. None of this changes how the "
         "mod plays except where it says so.");
 
+    ImGui::Spacing();
+    ImGui::TextWrapped(
+        "All of it is written to two files by itself, so there is nothing here "
+        "worth photographing: mods\\Coop.log is the timeline - every hit with "
+        "its bytes, every key going down, every checkpoint, every death - and "
+        "coop-dump-NNN.txt next to HMA.exe holds the facts that do not change, "
+        "written six seconds into the first level without anybody pressing "
+        "anything.");
+
     // ---- The dump ---------------------------------------------------------
 
-    ImGui::SeparatorText("Write everything to a file");
+    ImGui::SeparatorText("Write the facts out again");
 
-    if (ImGui::Button("Dump", ImVec2(150.f, 0.f)))
+    if (ImGui::Button("Dump now", ImVec2(150.f, 0.f)))
     {
         m_lastDumpPath = Game::WriteDump(m_configVars, m_probe, m_bindingExpression,
                                          std::vector<std::string>(m_log.begin(), m_log.end()),
@@ -1386,7 +1526,7 @@ void CoopMod::RenderResearchTab()
     }
 
     ImGui::SameLine();
-    ImGui::TextDisabled("next to HMA.exe, as coop-dump-NNN.txt");
+    ImGui::TextDisabled("only needed if you want a second one, later in the level");
 
     if (!m_lastDumpPath.empty())
     {
@@ -1396,9 +1536,6 @@ void CoopMod::RenderResearchTab()
     {
         ImGui::TextColored(ImVec4(1.f, 0.45f, 0.45f, 1.f), "%s", m_lastDumpError.c_str());
     }
-
-    ImGui::TextDisabled("Read the engine configuration on the Engine tab first,");
-    ImGui::TextDisabled("or its 1600-odd variables will be missing from the file.");
 
     // ---- Hits -------------------------------------------------------------
 

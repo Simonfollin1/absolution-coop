@@ -83,6 +83,17 @@ private:
     // hit reach the engine, and reports which bytes moved.
     void UpdatePlayerDiff();
 
+    // Writes the full dump by itself, once, shortly after a level is up.
+    //
+    // The button on the Research tab does the same thing on demand, but nobody
+    // should have to remember to press it - and nobody should have to
+    // photograph a panel to tell somebody else what it said.
+    void AutoDumpWhenReady(float deltaSeconds);
+
+    // Logs every key going down and coming up, so "the key does nothing" is
+    // answered by the file rather than by watching a row of indicators.
+    void TraceKeys();
+
     void AddLogLine(const std::string& line);
     std::string DescribeEvent(const Coop::Net::EventMessage& event) const;
     std::string PeerName(uint8_t peerId) const;
@@ -164,6 +175,12 @@ private:
     uint32_t m_tracedHits      = 0;
     bool     m_tracedArmed     = false;
     uint32_t m_tracedDeaths    = 0;
+    uint8_t  m_tracedPhase     = 0xFF;
+
+    // One entry per bound action, in the order the binding table declares them.
+    bool  m_tracedKeys[9]    = {};
+    float m_secondsWithPlayer = 0.f;
+    bool  m_autoDumped        = false;
 
     // The player object, before and after one hit the engine was allowed to
     // see. ZHitman5 is 0xD20 bytes; the whole thing is cheap to keep twice.

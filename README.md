@@ -44,6 +44,19 @@ or put everyone on the same LAN or VPN. Everyone else just types the host's
 There's no matchmaking or relay server, so you'll need to sort out port
 forwarding yourself. A VPN like ZeroTier or Radmin is the easy way around it.
 
+## When something's wrong
+
+It writes down what happened, so a bug report doesn't need screenshots:
+
+- `mods\Coop.log` — the timeline. Every hit and what was in it, every key going
+  down, every checkpoint, every death, every time it armed or gave up.
+- `coop-dump-NNN.txt`, next to `HMA.exe` — the facts. Which build you're on,
+  what the keys compiled to, the player's vtables, the actor list, and all
+  sixteen hundred engine config variables. Written by itself six seconds into
+  the first level.
+
+Both are plain text. Send them as they are.
+
 ## Docs
 
 - [BUILDING.md](docs/BUILDING.md) for building from source
