@@ -4,9 +4,10 @@ Co-op for *Hitman: Absolution*.
 
 Built on [pavledev's HitmanAbsolutionSDK](https://github.com/pavledev/HitmanAbsolutionSDK).
 
-> **Heads up: this is unproven.** It has never been run in the game. Right now
-> it's a design that's written down, not a mod that works. If you try it and
-> tell me what broke, that's the fastest way that changes.
+> **Heads up: this is untested in the game.** It builds and it packages, but
+> nobody has started Absolution with it loaded yet, so treat every feature
+> below as a claim rather than a fact. If you try it and tell me what broke,
+> that's the fastest way that changes.
 
 ## What you get
 
