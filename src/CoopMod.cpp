@@ -453,8 +453,83 @@ void CoopMod::OnDraw3D()
     m_avatars.Draw3D();
 }
 
+void CoopMod::ApplyTheme()
+{
+    // Applied from inside a draw call rather than at startup, because that is
+    // the one place the SDK's ImGui context is guaranteed to be current.
+    ImGuiStyle& style = ImGui::GetStyle();
+
+    style.WindowRounding    = 2.f;
+    style.FrameRounding     = 2.f;
+    style.TabRounding       = 2.f;
+    style.GrabRounding      = 2.f;
+    style.ScrollbarRounding = 2.f;
+    style.WindowBorderSize  = 1.f;
+    style.FrameBorderSize   = 0.f;
+
+    ImVec4* colours = style.Colors;
+
+    const ImVec4 background(0.11f, 0.11f, 0.12f, 0.96f);
+    const ImVec4 surface   (0.16f, 0.16f, 0.17f, 1.00f);
+    const ImVec4 raised    (0.22f, 0.22f, 0.23f, 1.00f);
+    const ImVec4 hovered   (0.29f, 0.29f, 0.30f, 1.00f);
+    const ImVec4 pressed   (0.36f, 0.36f, 0.37f, 1.00f);
+    const ImVec4 border    (0.28f, 0.28f, 0.29f, 0.60f);
+
+    colours[ImGuiCol_Text]                 = ImVec4(0.90f, 0.90f, 0.91f, 1.00f);
+    colours[ImGuiCol_TextDisabled]         = ImVec4(0.52f, 0.52f, 0.54f, 1.00f);
+    colours[ImGuiCol_WindowBg]             = background;
+    colours[ImGuiCol_ChildBg]              = ImVec4(0.13f, 0.13f, 0.14f, 0.60f);
+    colours[ImGuiCol_PopupBg]              = ImVec4(0.10f, 0.10f, 0.11f, 0.98f);
+    colours[ImGuiCol_Border]               = border;
+    colours[ImGuiCol_BorderShadow]         = ImVec4(0.f, 0.f, 0.f, 0.f);
+    colours[ImGuiCol_FrameBg]              = surface;
+    colours[ImGuiCol_FrameBgHovered]       = raised;
+    colours[ImGuiCol_FrameBgActive]        = hovered;
+    colours[ImGuiCol_TitleBg]              = ImVec4(0.09f, 0.09f, 0.10f, 1.00f);
+    colours[ImGuiCol_TitleBgActive]        = ImVec4(0.14f, 0.14f, 0.15f, 1.00f);
+    colours[ImGuiCol_TitleBgCollapsed]     = ImVec4(0.09f, 0.09f, 0.10f, 0.75f);
+    colours[ImGuiCol_MenuBarBg]            = surface;
+    colours[ImGuiCol_ScrollbarBg]          = ImVec4(0.09f, 0.09f, 0.10f, 0.60f);
+    colours[ImGuiCol_ScrollbarGrab]        = raised;
+    colours[ImGuiCol_ScrollbarGrabHovered] = hovered;
+    colours[ImGuiCol_ScrollbarGrabActive]  = pressed;
+    colours[ImGuiCol_CheckMark]            = ImVec4(0.82f, 0.82f, 0.84f, 1.00f);
+    colours[ImGuiCol_SliderGrab]           = hovered;
+    colours[ImGuiCol_SliderGrabActive]     = pressed;
+    colours[ImGuiCol_Button]               = raised;
+    colours[ImGuiCol_ButtonHovered]        = hovered;
+    colours[ImGuiCol_ButtonActive]         = pressed;
+    colours[ImGuiCol_Header]               = raised;
+    colours[ImGuiCol_HeaderHovered]        = hovered;
+    colours[ImGuiCol_HeaderActive]         = pressed;
+    colours[ImGuiCol_Separator]            = border;
+    colours[ImGuiCol_SeparatorHovered]     = hovered;
+    colours[ImGuiCol_SeparatorActive]      = pressed;
+    colours[ImGuiCol_ResizeGrip]           = raised;
+    colours[ImGuiCol_ResizeGripHovered]    = hovered;
+    colours[ImGuiCol_ResizeGripActive]     = pressed;
+    colours[ImGuiCol_Tab]                  = ImVec4(0.15f, 0.15f, 0.16f, 1.00f);
+    colours[ImGuiCol_TabHovered]           = hovered;
+    colours[ImGuiCol_TabActive]            = ImVec4(0.26f, 0.26f, 0.27f, 1.00f);
+    colours[ImGuiCol_TabUnfocused]         = ImVec4(0.12f, 0.12f, 0.13f, 1.00f);
+    colours[ImGuiCol_TabUnfocusedActive]   = ImVec4(0.19f, 0.19f, 0.20f, 1.00f);
+    colours[ImGuiCol_TableHeaderBg]        = surface;
+    colours[ImGuiCol_TableBorderStrong]    = border;
+    colours[ImGuiCol_TableBorderLight]     = ImVec4(0.24f, 0.24f, 0.25f, 0.40f);
+    colours[ImGuiCol_TableRowBg]           = ImVec4(0.f, 0.f, 0.f, 0.f);
+    colours[ImGuiCol_TableRowBgAlt]        = ImVec4(1.f, 1.f, 1.f, 0.025f);
+    colours[ImGuiCol_TextSelectedBg]       = ImVec4(0.35f, 0.35f, 0.37f, 0.60f);
+}
+
 void CoopMod::OnDrawUI(const bool hasFocus)
 {
+    if (!m_themeApplied)
+    {
+        ApplyTheme();
+        m_themeApplied = true;
+    }
+
     RenderHudOverlay();
 
     if (!m_isOpen || !hasFocus)
