@@ -583,8 +583,13 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
         m_sceneAnnounceIn = 0.f;
     }
 
-    // A scene load somebody asked for from the panel. Done here, on the game
-    // thread, with no frame in progress - never from the button itself.
+    // A scene load somebody asked for from the panel. Started here, on the
+    // game thread, with no frame in progress - never from the button itself.
+    //
+    // Starting it only puts three resource requests in. Nothing is torn down
+    // until they have all arrived, which is a few seconds later and several
+    // frames along, so the player who pressed the button keeps a working game
+    // in the meantime and gets it back if the level turns out not to load.
     if (m_sceneLoadPending)
     {
         m_sceneLoadPending = false;
@@ -595,9 +600,41 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
         // look like if it did.
         m_sceneLoadWasIn   = m_publishedScene;
         m_sceneLoadFromLvl = m_probe.LocalState().level;
-        m_sceneLoadWatch   = 12.f;
+        m_sceneLoadWatch   = 0.f;
 
-        if (!Game::SceneSync::LoadScene(m_sceneLoadRequest, m_sceneLoadCheckpoint, error))
+        if (!Game::SceneSync::Begin(m_sceneLoadRequest, m_sceneLoadCheckpoint, error))
+        {
+            m_sceneError = error;
+
+            AddLogLine(std::format("Could not go there: {}", error));
+        }
+        else
+        {
+            m_sceneError.clear();
+
+            AddLogLine("Loading their level - waiting for it to stream in");
+        }
+    }
+
+    Game::SceneSync::Update(deltaSeconds);
+
+    if (Game::SceneSync::IsReadyToCommit())
+    {
+        // Let go of everything the mod is holding that points into the world
+        // about to be destroyed. The damage hook is a patched entry in the
+        // player's vtable and the player is about to stop existing; the
+        // spectator camera is orbiting a position in a level that is going
+        // away. Both re-arm by themselves once the new world is up.
+        Game::TheDownedState().Disarm();
+        Game::TheDownedState().ResetForNewSession();
+
+        m_spectator.Leave();
+
+        std::string error;
+
+        m_sceneLoadWatch = 30.f;
+
+        if (!Game::SceneSync::Commit(error))
         {
             m_sceneError     = error;
             m_sceneLoadWatch = 0.f;
@@ -637,13 +674,13 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
             m_publishedScene = m_sceneLoadWasIn;
 
             m_sceneError =
-                "the level did not load - CreateScene alone is not enough, the "
-                "scene resource has to be loaded and handed to SetSceneResources "
-                "first, and that call has not been found yet";
+                "the level's resources loaded and the engine took them, but the "
+                "chapter never changed - the log has the last call that ran";
 
             AddLogLine(m_sceneError);
 
-            Diag::Log("scene: no transition after twelve seconds, name put back to %s",
+            Diag::Log("scene: no transition thirty seconds after CreateScene, "
+                      "name put back to %s",
                       m_sceneLoadWasIn.empty() ? "(menu)" : m_sceneLoadWasIn.c_str());
         }
     }
@@ -1833,7 +1870,13 @@ void CoopMod::RenderSessionTab()
 
         ImGui::TextDisabled("%s", m_peerScene.c_str());
 
-        ImGui::BeginDisabled(m_sceneLoadPending);
+        const Game::SceneSync::Stage stage = Game::SceneSync::CurrentStage();
+
+        const bool loading = m_sceneLoadPending
+                          || stage == Game::SceneSync::Stage::Streaming
+                          || stage == Game::SceneSync::Stage::Ready;
+
+        ImGui::BeginDisabled(loading);
 
         if (ImGui::Button("Go there", ImVec2(180.f, 0.f)))
         {
@@ -1853,7 +1896,18 @@ void CoopMod::RenderSessionTab()
         ImGui::EndDisabled();
 
         ImGui::SameLine();
-        ImGui::TextDisabled("this restarts you into their mission");
+
+        if (loading)
+        {
+            // The level streams in over several seconds and the game keeps
+            // running the whole time, so without this the button just goes
+            // grey and nothing appears to happen.
+            ImGui::TextDisabled("%s", Game::SceneSync::StatusLine());
+        }
+        else
+        {
+            ImGui::TextDisabled("this restarts you into their mission");
+        }
 
         if (!m_sceneError.empty())
         {
