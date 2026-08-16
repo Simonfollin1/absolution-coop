@@ -100,10 +100,11 @@ private:
     // that one is the version people use and it has the details right.
     void MouseLook(float deltaSeconds, float& yawDelta, float& pitchDelta);
 
-    // The red that says you are being shot, and the fake health it is drawn
-    // from. Absolution has no health bar: damage is a red screen that closes
-    // in, so a mod that owns the health has to own that too or the player is
-    // taking damage with no way to see it.
+    // The red that says you are being shot, drawn from the pool this mod owns
+    // rather than from the engine's health - which no longer moves.
+    //
+    // Half the answer. The other half is the health ring around the radar,
+    // which is the engine's and still reads full; see Game/ScaleformProbe.h.
     void RenderHurtOverlay();
 
     void AddLogLine(const std::string& line);

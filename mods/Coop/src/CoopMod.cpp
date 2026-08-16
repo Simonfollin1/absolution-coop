@@ -25,6 +25,7 @@
 #include "Game/BuildInfo.h"
 #include "Game/DebugDump.h"
 #include "Game/HitInspector.h"
+#include "Game/ScaleformProbe.h"
 #include "Memory/GameOffsets.h"
 #include "Game/ModPresence.h"
 #include "UI/CursorFocus.h"
@@ -880,6 +881,11 @@ void CoopMod::AutoDumpWhenReady(float deltaSeconds)
         Diag::Log("config: %s", m_configVars.Diagnostic().c_str());
     }
 
+    // The HUD has a health ring around the radar, and this mod has been
+    // emptying a pool the ring knows nothing about. Whether the ring can be
+    // reached by name is a question only the running game answers.
+    Game::LogHudProbe();
+
     std::string error;
 
     const std::string path = Game::WriteDump(
@@ -1229,12 +1235,18 @@ void CoopMod::RenderHurtOverlay()
         return;
     }
 
-    // Absolution does not draw a health bar. Damage is a red vignette that
-    // closes in from the edges and a desaturation of everything inside it, and
-    // health coming back is that receding - so when this mod takes the health
-    // away from the engine, it takes the only feedback the player had with it.
-    // Which is exactly what happened: the health went down in a panel nobody
-    // had open while the screen stayed clean.
+    // Damage in Absolution is a red vignette closing in from the edges, and
+    // when this mod took the health off the engine it took that with it - the
+    // pool emptied in a panel nobody had open while the screen stayed clean.
+    // This draws it back from the pool we own.
+    //
+    // It is not the whole of what the game shows, though. There is a health
+    // ring around the radar, driven by the engine's own health, and that one
+    // still reads full while this empties - so a player watching the HUD is
+    // being told they are fine right up until they fall over. Fixing that means
+    // either driving the ring through Scaleform or letting the engine keep its
+    // health and mirroring it, and Game/ScaleformProbe.h is what will decide
+    // which. Until then this is honest about being half the answer.
     const float missing = 1.f - downed.HitPointsFraction();
 
     // Below this the game would not have shown anything either.
@@ -1750,10 +1762,12 @@ void CoopMod::RenderRulesTab()
     if (ImGui::IsItemHovered())
     {
         ImGui::SetTooltip(
-            "Absolution has no health bar - damage is a red vignette closing in\n"
-            "from the edges. Taking the health off the engine took that with it,\n"
-            "so this draws it back from the pool the mod owns. Fake, and the\n"
-            "only feedback there is.");
+            "Damage in Absolution is a red vignette closing in from the edges.\n"
+            "Taking the health off the engine took that with it, so this draws\n"
+            "it back from the pool the mod owns.\n\n"
+            "The health ring around the radar is the engine's and still reads\n"
+            "full - it does not know about this pool. See the HUD probe in the\n"
+            "log for whether that can be fixed.");
     }
 
     ImGui::Checkbox("Mouse look while spectating", &m_mouseLook);

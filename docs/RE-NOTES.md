@@ -87,10 +87,20 @@ Beside it: `HealthRegenPerSecond.*`, `CriticalHealthThreshold.*`,
 `HealthInterval0|1`, `NPCDamageReceivedMultiplier.*`, `CCHitmanDamage`.
 The whole health model is configuration.
 
-**`_root.g_mcHealthBar`** is the Scaleform health bar. `ZHUDManager::GetHUD()`
+**`_root.g_mcHealthBar`** is the Scaleform health bar — the ring around the
+radar, which the mod spent a while claiming did not exist. `ZHUDManager::GetHUD()`
 returns an `IScaleformPlayer*` and `GFxValue::GetMember` is at `0x19D5C0`, so
 the player's real health is readable through the HUD — no offset, no hunting
 for `ZHM5Health` in memory, and it cannot go stale against a patch.
+
+It cuts both ways, and the second way is the one that bites: the ring is driven
+by the engine's health, the mod empties a pool of its own, and the two have
+nothing to do with each other. So the HUD tells the player they are at full
+health right up to the moment they fall over. `Game/ScaleformProbe.h` walks
+`_root` for these names in the game and logs what resolves, which decides
+whether the ring can be written from the mod's pool — or whether the answer is
+to stop blocking the damage and mirror the engine's health instead, and let the
+game keep drawing its own HUD.
 
 **`OnTakeDamage`, `OnHitInfo`, `DamageTaken`, `OnGetHealth`, `LowHealth`,
 `HealthReplenished`, `OnDrainHealthStarted`** read as entity *pin* names rather
