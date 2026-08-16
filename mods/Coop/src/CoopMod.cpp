@@ -591,14 +591,61 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
 
         std::string error;
 
+        // What to put back if nothing happens, and what a transition would
+        // look like if it did.
+        m_sceneLoadWasIn   = m_publishedScene;
+        m_sceneLoadFromLvl = m_probe.LocalState().level;
+        m_sceneLoadWatch   = 12.f;
+
         if (!Game::SceneSync::LoadScene(m_sceneLoadRequest, m_sceneLoadCheckpoint, error))
         {
-            m_sceneError = error;
+            m_sceneError     = error;
+            m_sceneLoadWatch = 0.f;
+
             AddLogLine(std::format("Could not go there: {}", error));
         }
 
         // Nothing after this can assume the world still exists.
         return;
+    }
+
+    // Did it actually go anywhere?
+    //
+    // Asking for a load changes what the game says about itself whether or not
+    // it loads: the scene name is written first, so the mod reads back the
+    // destination and believes it has arrived. In the game it did exactly that
+    // - the name changed, the chapter did not, the player stayed in the menu,
+    // and the button offering to go quietly disappeared because the two names
+    // now matched. Believing a load happened is worse than admitting it did
+    // not, so this waits for the chapter to move and puts the name back when it
+    // does not.
+    if (m_sceneLoadWatch > 0.f)
+    {
+        m_sceneLoadWatch -= deltaSeconds;
+
+        if (m_probe.LocalState().level != m_sceneLoadFromLvl)
+        {
+            m_sceneLoadWatch = 0.f;
+
+            Diag::Log("scene: the load happened - chapter %u now",
+                      m_probe.LocalState().level);
+        }
+        else if (m_sceneLoadWatch <= 0.f)
+        {
+            Game::SceneSync::SetSceneName(m_sceneLoadWasIn);
+
+            m_publishedScene = m_sceneLoadWasIn;
+
+            m_sceneError =
+                "the level did not load - CreateScene alone is not enough, the "
+                "scene resource has to be loaded and handed to SetSceneResources "
+                "first, and that call has not been found yet";
+
+            AddLogLine(m_sceneError);
+
+            Diag::Log("scene: no transition after twelve seconds, name put back to %s",
+                      m_sceneLoadWasIn.empty() ? "(menu)" : m_sceneLoadWasIn.c_str());
+        }
     }
 
     TraceWorldChanges();
@@ -1192,8 +1239,15 @@ void CoopMod::PumpEvents()
         // Somebody said which level they are in. Remembered rather than acted
         // on: loading a level throws away everything the player was doing, and
         // that is not a decision to make because a packet arrived.
-        if (event.type == Net::EventType::LevelChanged &&
-            Game::SceneSync::IsMissionScene(event.text))
+        // The announcement repeats every three seconds so that a late joiner
+        // and a lost packet both heal themselves. That is right on the wire and
+        // wrong in the log, which filled with one identical line per repeat -
+        // sixty of them in the session this came from. Only a change is news.
+        const bool levelNews = event.type == Net::EventType::LevelChanged
+                            && Game::SceneSync::IsMissionScene(event.text)
+                            && event.text != m_peerScene;
+
+        if (levelNews)
         {
             m_peerScene           = event.text;
             m_peerSceneCheckpoint = static_cast<int>(event.x);
@@ -1201,6 +1255,11 @@ void CoopMod::PumpEvents()
 
             Diag::Log("scene: %s is in %s at checkpoint %d",
                       name.c_str(), m_peerScene.c_str(), m_peerSceneCheckpoint);
+        }
+        else if (event.type == Net::EventType::LevelChanged)
+        {
+            // Same level as last time, or the menu. Nothing to say.
+            continue;
         }
 
         if (event.type == Net::EventType::Marker)
@@ -1235,7 +1294,9 @@ std::string CoopMod::DescribeEvent(const Net::EventMessage& event) const
     case Net::EventType::ActorDied:         return std::format("{} took someone down", name);
     case Net::EventType::CheckpointReached: return std::format("{} reached {}", name, text);
     case Net::EventType::PlayerJoined:      return std::format("{} joined", text.empty() ? name : text);
-    case Net::EventType::PlayerLeft:        return std::format("{} left", text.empty() ? name : text);
+    case Net::EventType::PlayerLeft:        return text.empty()
+                                                   ? std::format("{} left", name)
+                                                   : std::format("{}: {}", name, text);
     case Net::EventType::LevelChanged:      return std::format("{} moved to another chapter", name);
     case Net::EventType::SessionReset:      return "Session reset";
     default:                                return std::format("{} {}", name, text);

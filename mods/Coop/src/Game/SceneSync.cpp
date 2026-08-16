@@ -119,6 +119,20 @@ namespace Coop::Game
         return ReadCheckpointIndex(LevelManager, index) ? index : -1;
     }
 
+    bool SceneSync::SetSceneName(const std::string& sceneResource)
+    {
+        if (!LevelManager || sceneResource.empty())
+        {
+            return false;
+        }
+
+        const ZString view(sceneResource.c_str());
+
+        LevelManager->GetSceneParameters().sSceneResource = ZString::CopyFrom(view);
+
+        return true;
+    }
+
     bool SceneSync::LoadScene(const std::string& sceneResource, int checkpointIndex,
                               std::string& error)
     {

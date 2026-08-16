@@ -159,6 +159,13 @@ private:
     int         m_sceneLoadCheckpoint = -1;
     bool        m_sceneLoadPending    = false;
 
+    // Watching whether the load actually happened. Writing the scene name makes
+    // the game claim to be somewhere it is not, so a failed attempt has to be
+    // taken back or the mod believes it arrived.
+    std::string m_sceneLoadWasIn;
+    uint8_t     m_sceneLoadFromLvl = 0xFF;
+    float       m_sceneLoadWatch   = 0.f;
+
     char m_hostAddress[64] = "127.0.0.1:47474";
     char m_playerName[32]  = "Agent";
     char m_password[32]    = "";

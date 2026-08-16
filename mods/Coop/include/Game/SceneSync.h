@@ -48,5 +48,14 @@ namespace Coop::Game
         // mission means.
         static bool LoadScene(const std::string& sceneResource, int checkpointIndex,
                               std::string& error);
+
+        // Writes the scene name and nothing else.
+        //
+        // Needed because asking for a load changes what the game says about
+        // itself whether or not anything loads, and something has to be able to
+        // put that back. A game claiming to be in a level it never went to is
+        // worse than one that admits the attempt failed - it takes the button
+        // to try again away with it.
+        static bool SetSceneName(const std::string& sceneResource);
     };
 }
