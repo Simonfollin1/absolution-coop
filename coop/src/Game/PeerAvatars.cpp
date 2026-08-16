@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <format>
+#include <memory>
 
 #include <SDK.h>
 #include <Renderer/DirectXRenderer.h>

@@ -115,7 +115,10 @@ namespace Coop::Game
 
         m_state.yaw = std::atan2(forwardY, forwardX);
 
-        const float delta = updateEvent.m_RealTimeDelta;
+        // m_RealTimeDelta is a ZGameTime, not a float - it holds ticks and
+        // only converts on request. Real time rather than game time, so this
+        // keeps working while the game is paused.
+        const float delta = static_cast<float>(updateEvent.m_RealTimeDelta.ToSeconds());
 
         if (m_hasPreviousPosition && delta > 0.f && delta < kMaxUsefulDelta)
         {

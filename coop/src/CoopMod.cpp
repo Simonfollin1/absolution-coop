@@ -143,8 +143,9 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
     m_probe.Update(updateEvent);
 
     // Real time, not game time: co-op has to keep running while one player is
-    // sitting in a pause menu.
-    const float deltaSeconds = updateEvent.m_RealTimeDelta;
+    // sitting in a pause menu. ZGameTime holds ticks and converts on request -
+    // it does not implicitly become a float.
+    const float deltaSeconds = static_cast<float>(updateEvent.m_RealTimeDelta.ToSeconds());
 
     UpdateSceneTransition();
     UpdateDownedFlow(deltaSeconds);
