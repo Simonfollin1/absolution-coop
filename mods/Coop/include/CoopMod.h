@@ -115,6 +115,9 @@ private:
     std::string DescribeEvent(const Coop::Net::EventMessage& event) const;
     std::string PeerName(uint8_t peerId) const;
 
+    // Takes back the offer to follow somebody, and says in the log why.
+    void ForgetPeerScene(const char* why);
+
     Coop::Net::Session     m_session;
     Coop::Net::PortMapper  m_portMapper;
     Coop::Game::WorldProbe m_probe;
@@ -149,6 +152,7 @@ private:
     float       m_sceneAnnounceIn = 0.f;
     std::string m_peerScene;
     std::string m_peerSceneOwner;
+    uint8_t     m_peerSceneOwnerId = Coop::Net::kInvalidPeerId;
     std::string m_sceneError;
     int         m_peerSceneCheckpoint = -1;
 

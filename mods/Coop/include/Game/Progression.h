@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "Net/Protocol.h"
 
@@ -74,9 +75,15 @@ namespace Coop::Game
         const ProgressionSettings& Settings() const { return m_settings; }
 
         // Called every frame with what the local world currently reports.
-        // Returns an event to broadcast, if this frame produced one.
-        bool ObserveLocal(int jumpPoint, uint8_t level, bool playerPresent, bool playerDead,
-                          Net::EventMessage& outEvent);
+        // Appends whatever this frame produced.
+        //
+        // A frame can produce two: dying and crossing a checkpoint are read
+        // from different signals and nothing stops them landing together. The
+        // first version handed back one event by reference, so when that
+        // happened the death note was silently overwritten by the checkpoint
+        // and the other players never heard about it.
+        void ObserveLocal(int jumpPoint, uint8_t level, bool playerPresent, bool playerDead,
+                          std::vector<Net::EventMessage>& outEvents);
 
         // A CheckpointReached or PlayerDied arriving from another player.
         void ObserveRemote(const Net::EventMessage& event, const std::string& peerName);

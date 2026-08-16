@@ -32,11 +32,9 @@ namespace Coop::Game
             && m_localJumpPoint >= 0;
     }
 
-    bool Progression::ObserveLocal(int jumpPoint, uint8_t level, bool playerPresent,
-                                   bool playerDead, Net::EventMessage& outEvent)
+    void Progression::ObserveLocal(int jumpPoint, uint8_t level, bool playerPresent,
+                                   bool playerDead, std::vector<Net::EventMessage>& outEvents)
     {
-        bool produced = false;
-
         // Signal one: the engine says the player is dead. This can be missed
         // entirely if the death sequence is shorter than the gap between two
         // samples, which is why there is a signal two.
@@ -46,9 +44,11 @@ namespace Coop::Game
             m_deathPending      = true;
             m_secondsSinceDeath = 0.f;
 
-            outEvent.type = Net::EventType::ObjectiveNote;
-            outEvent.text = "died";
-            produced      = true;
+            Net::EventMessage died;
+            died.type = Net::EventType::ObjectiveNote;
+            died.text = "died";
+
+            outEvents.push_back(died);
         }
 
         if (!playerDead)
@@ -69,11 +69,13 @@ namespace Coop::Game
 
             if (movedForward && m_localJumpPoint >= 0 && !m_deathPending)
             {
-                outEvent.type = Net::EventType::CheckpointReached;
-                outEvent.x    = static_cast<float>(jumpPoint);
-                outEvent.y    = static_cast<float>(level);
-                outEvent.text = std::format("checkpoint {}", jumpPoint);
-                produced      = true;
+                Net::EventMessage reached;
+                reached.type = Net::EventType::CheckpointReached;
+                reached.x    = static_cast<float>(jumpPoint);
+                reached.y    = static_cast<float>(level);
+                reached.text = std::format("checkpoint {}", jumpPoint);
+
+                outEvents.push_back(reached);
             }
 
             // Coming back at the same place we died is the confirmation that
@@ -104,8 +106,6 @@ namespace Coop::Game
                 m_teamLevel     = level;
             }
         }
-
-        return produced;
     }
 
     void Progression::ObserveRemote(const Net::EventMessage& event, const std::string& peerName)

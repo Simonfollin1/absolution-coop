@@ -450,6 +450,22 @@ void CoopMod::AddLogLine(const std::string& line)
     }
 }
 
+void CoopMod::ForgetPeerScene(const char* why)
+{
+    if (m_peerScene.empty() && m_peerSceneOwnerId == Net::kInvalidPeerId)
+    {
+        return;
+    }
+
+    Diag::Log("scene: dropping the offer to join %s - %s",
+              m_peerScene.empty() ? "(nowhere)" : m_peerScene.c_str(), why);
+
+    m_peerScene.clear();
+    m_peerSceneOwner.clear();
+    m_peerSceneOwnerId    = Net::kInvalidPeerId;
+    m_peerSceneCheckpoint = -1;
+}
+
 std::string CoopMod::PeerName(uint8_t peerId) const
 {
     for (const Game::AvatarView& view : m_avatars.Views())
@@ -694,20 +710,47 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
 
     if (!m_session.IsActive())
     {
+        // Nobody is out there, so nobody is anywhere worth going.
+        ForgetPeerScene("the session ended");
+
         return;
     }
 
     PublishLocalState();
     PumpEvents();
 
-    // Local progress, turned into something the others can act on.
-    Net::EventMessage localEvent;
+    // PlayerLeft is one reliable message and reliable is not the same as
+    // guaranteed - the link can time out before it lands. So the offer is also
+    // checked against who is actually still here.
+    if (m_peerSceneOwnerId != Net::kInvalidPeerId)
+    {
+        bool stillHere = false;
 
-    if (m_progression.ObserveLocal(m_probe.CurrentJumpPoint(),
-                                  m_probe.LocalState().level,
-                                  m_probe.HasPlayer(),
-                                  (m_probe.LocalState().flags & Net::SF_Dead) != 0,
-                                  localEvent))
+        for (const Net::PeerSnapshot& peer : m_session.SnapshotPeers())
+        {
+            if (peer.peerId == m_peerSceneOwnerId)
+            {
+                stillHere = true;
+                break;
+            }
+        }
+
+        if (!stillHere)
+        {
+            ForgetPeerScene("they are no longer in the session");
+        }
+    }
+
+    // Local progress, turned into something the others can act on.
+    std::vector<Net::EventMessage> localEvents;
+
+    m_progression.ObserveLocal(m_probe.CurrentJumpPoint(),
+                               m_probe.LocalState().level,
+                               m_probe.HasPlayer(),
+                               (m_probe.LocalState().flags & Net::SF_Dead) != 0,
+                               localEvents);
+
+    for (const Net::EventMessage& localEvent : localEvents)
     {
         m_session.SendEvent(localEvent);
     }
@@ -1280,23 +1323,43 @@ void CoopMod::PumpEvents()
         // and a lost packet both heal themselves. That is right on the wire and
         // wrong in the log, which filled with one identical line per repeat -
         // sixty of them in the session this came from. Only a change is news.
-        const bool levelNews = event.type == Net::EventType::LevelChanged
-                            && Game::SceneSync::IsMissionScene(event.text)
-                            && event.text != m_peerScene;
-
-        if (levelNews)
+        // Somebody left, and they were the reason a ride was on offer.
+        if (event.type == Net::EventType::PlayerLeft && event.originPeerId == m_peerSceneOwnerId)
         {
+            ForgetPeerScene("they left the session");
+        }
+
+        if (event.type == Net::EventType::LevelChanged)
+        {
+            if (!Game::SceneSync::IsMissionScene(event.text))
+            {
+                // They went back to the front end. The offer was theirs, so it
+                // goes with them - the first version only ever *set* the peer's
+                // level and never cleared it, so a player who quit to the menu
+                // left a Go there button behind pointing at a level nobody was
+                // in, and it stayed there for the rest of the session.
+                if (event.originPeerId == m_peerSceneOwnerId)
+                {
+                    ForgetPeerScene("they went back to the menu");
+                }
+
+                continue;
+            }
+
+            if (event.text == m_peerScene && event.originPeerId == m_peerSceneOwnerId)
+            {
+                // The three second repeat, which exists so a late joiner and a
+                // lost packet both heal themselves. Not news.
+                continue;
+            }
+
             m_peerScene           = event.text;
             m_peerSceneCheckpoint = static_cast<int>(event.x);
             m_peerSceneOwner      = name;
+            m_peerSceneOwnerId    = event.originPeerId;
 
             Diag::Log("scene: %s is in %s at checkpoint %d",
                       name.c_str(), m_peerScene.c_str(), m_peerSceneCheckpoint);
-        }
-        else if (event.type == Net::EventType::LevelChanged)
-        {
-            // Same level as last time, or the menu. Nothing to say.
-            continue;
         }
 
         if (event.type == Net::EventType::Marker)
