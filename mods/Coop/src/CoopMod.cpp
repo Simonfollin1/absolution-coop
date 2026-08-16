@@ -14,6 +14,7 @@
 #include "CoopMod.h"
 #include "Game/BuildInfo.h"
 #include "Memory/GameOffsets.h"
+#include "Game/ModPresence.h"
 
 using namespace Coop;
 
@@ -108,6 +109,16 @@ void CoopMod::OnEngineInitialized()
     m_cost.Configure("coop");
 
     AddLogLine(Game::BuildInfo::Get().Describe());
+
+    // Both mods drive the render destination, and whichever writes last wins.
+    // Nothing here can arbitrate that, so it is said once rather than left for
+    // somebody to discover while lying on the floor.
+    if (ModPresence::IsLoaded(ModPresence::CINEMATIC_CAMERA))
+    {
+        AddLogLine("Cinematic Camera is loaded. Both it and the spectator camera "
+                   "take over the view, so being down while its free camera is on "
+                   "will fight. Turn one of them off.");
+    }
 
     if (!Game::BuildInfo::Get().OffsetsUsable())
     {
