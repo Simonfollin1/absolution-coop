@@ -36,8 +36,8 @@ One player hosts, and **only the host needs a reachable UDP port**. Forward it,
 or put everyone on the same LAN or VPN. Everyone else just types the host's
 `address:port`.
 
-There's no matchmaking or relay server, so you get to deal with your own
-router.
+There's no matchmaking or relay server, so you'll need to sort out port
+forwarding yourself. A VPN like ZeroTier or Radmin is the easy way around it.
 
 ## Docs
 
@@ -46,15 +46,22 @@ router.
 
 ## Credits
 
-- **[pavledev](https://github.com/pavledev)** for the SDK, the resource editor,
-  and most of the open format documentation this scene runs on
+Absolution modding is a small scene and this is standing on all of it.
+
+- **[pavledev](https://github.com/pavledev)** wrote the SDK, the resource
+  editor, the Blender pipeline and most of the open format documentation.
+  Genuinely none of this exists without that work.
 - **[SuiMachine](https://github.com/SuiMachine/LiveSplit.HitmanAbsolution)**
-  for the memory offsets and the Steam/GOG detection trick
+  for the memory offsets and the trick of telling Steam and GOG apart by
+  image size.
 - **[LennardF1989](https://github.com/LennardF1989/Hitman-5-Server)** and
-  **[the Peacock Project](https://github.com/thepeacockproject/Cobra)** for the
-  Contracts server emulators
+  **[the Peacock Project](https://github.com/thepeacockproject/Cobra)** brought
+  Contracts back after the servers went down. One address in there also
+  happened to confirm this project's entire symbol table.
+- The **[Glacier 2 modding Discord](https://discord.gg/6UDtuYhZP6)**, where
+  most of what anyone knows about this engine got worked out.
 
 ## License
 
-GPL-3.0, and not by choice. This links against `HitmanAbsolutionSDK`, which is
-GPL-3.0, so anything built from it is too.
+GPL-3.0, same as the `HitmanAbsolutionSDK` this is built on. Take it apart,
+fork it, use whatever's useful. Full text in [LICENSE](LICENSE).
