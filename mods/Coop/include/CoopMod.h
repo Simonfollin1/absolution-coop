@@ -46,6 +46,17 @@ public:
 private:
     void OnFrameUpdate(const SGameUpdateEvent& updateEvent);
 
+    // Compiles [Bindings] into one engine binding block and registers it.
+    //
+    // Not ModInterface::AddBindings, which builds every action as tap(kb,key).
+    // A tap is one frame of Digital() per press, which is right for a toggle
+    // and useless for the spectator camera - holding an arrow key would nudge
+    // the view once and then stop. These need hold(), so the block is built
+    // here instead of there.
+    void InstallBindings();
+
+    void UpdateMarkerKey();
+    void UpdateKillFeed();
     void PublishLocalState();
     void PumpEvents();
     void UpdateSceneTransition();
@@ -113,6 +124,20 @@ private:
     bool m_prevToggle = false;
     bool m_prevFollow = false;
     bool m_prevMarker = false;
+
+    // What InstallBindings actually handed the engine, and what it said back.
+    // Both go in the diagnostics tab: "my keys do nothing" is otherwise a
+    // question nobody can answer from outside the process.
+    std::string m_bindingExpression;
+    bool        m_bindingsAccepted = false;
+    bool        m_bindingsEnabled  = true;
+
+    // The keys as they ended up, for anything that tells the player which key
+    // to press. Saying "F7" beats saying "the follow key" when the ini may have
+    // made it something else entirely.
+    std::string m_keyToggle = "F6";
+    std::string m_keyFollow = "F7";
+    std::string m_keyMarker = "F8";
 };
 
 DECLARE_MOD(CoopMod)

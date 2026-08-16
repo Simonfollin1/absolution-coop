@@ -8,7 +8,7 @@
 
 #include "Game/DownedState.h"
 #include "Game/BuildInfo.h"
-#include "Game/ConfigVars.h"
+#include "Memory/GameOffsets.h"
 
 namespace Coop::Game
 {
@@ -67,6 +67,17 @@ namespace Coop::Game
         // address for, so magnitude is not read from here at all - see
         // DamageFromHit.
         constexpr size_t kHitInfoHitPositionOffset = 0x20;
+
+        // The player god-mode flag, as an offset from the game module's base.
+        //
+        // This is the SDK's own address - Mods/Player writes it behind the "God
+        // Mode" checkbox - so it is as confirmed as anything else the SDK does,
+        // and it is a shipped feature people use. It is a static int inside
+        // HMA.exe rather than a pointer to walk.
+        //
+        // Not to be confused with 0xD4D91C, which the Actors mod writes: that
+        // one is god mode for NPCs, a different flag for a different job.
+        constexpr uintptr_t kPlayerGodModeOffset = 0xD4F5E0;
 
         bool PointerIsExecutable(const void* pointer)
         {
@@ -139,6 +150,16 @@ namespace Coop::Game
         return std::max(0.f, m_settings.selfReviveSeconds - m_downedSeconds);
     }
 
+    float DownedState::SecondsOfGraceLeft() const
+    {
+        if (m_phase != DownedPhase::Recovering)
+        {
+            return 0.f;
+        }
+
+        return std::max(0.f, m_settings.recoveryGraceSeconds - m_recoveringSeconds);
+    }
+
     void DownedState::ResetForNewSession()
     {
         m_phase        = DownedPhase::Alive;
@@ -147,6 +168,7 @@ namespace Coop::Game
         m_hitsTaken     = 0;
         m_timesDowned   = 0;
         m_downedSeconds = 0.f;
+        m_recoveringSeconds = 0.f;
     }
 
     bool DownedState::Arm(ZHitman5* hitman)
@@ -201,9 +223,14 @@ namespace Coop::Game
             return false;
         }
 
-        m_armedFor  = hitman;
-        m_hitPoints = m_settings.maxHitPoints;
-        m_phase     = DownedPhase::Alive;
+        m_armedFor          = hitman;
+        m_hitPoints         = m_settings.maxHitPoints;
+        m_phase             = DownedPhase::Alive;
+        m_recoveringSeconds = 0.f;
+
+        // A new scene is a fair place to reconsider a refusal - the flag may
+        // have held something unrecognisable at the moment we last looked.
+        m_immunityRefused = false;
 
         ApplyEngineImmunity(true);
 
@@ -314,50 +341,99 @@ namespace Coop::Game
             }
         }
 
-        if (m_armed)
-        {
-            ApplyEngineImmunity(false);
-        }
+        // Unconditional: it restores only a write it made, and leaving god mode
+        // on after the mod has gone would be somebody else's mystery.
+        ApplyEngineImmunity(false);
 
-        m_armed         = false;
-        m_patchedVtable = nullptr;
-        m_originalEntry = nullptr;
-        m_armedFor      = nullptr;
+        m_armed           = false;
+        m_immunityRefused = false;
+        m_patchedVtable   = nullptr;
+        m_originalEntry   = nullptr;
+        m_armedFor        = nullptr;
     }
 
     void DownedState::ApplyEngineImmunity(bool enable)
     {
+        // The backstop, not the mechanism. The vtable patch catches ordinary
+        // damage; this covers the paths that never reach YouGotHit at all -
+        // falls, drowning, scripted kills - where the engine would otherwise
+        // run its death sequence and reload a checkpoint, which in a session
+        // resets one player's whole world while the others carry on.
+        if (!enable)
+        {
+            // Only undo a write we actually made, and put back what was there
+            // rather than assuming it was off. Somebody may have had the SDK's
+            // own God Mode checkbox ticked before we arrived.
+            if (m_immunityApplied)
+            {
+                *reinterpret_cast<int*>(GameOffsets::GetModuleBase() + kPlayerGodModeOffset) =
+                    m_immunityPrevious;
+
+                m_immunityApplied = false;
+                m_immunityNote    = "god-mode flag restored";
+            }
+
+            return;
+        }
+
         if (!m_settings.alsoUseEngineImmunity)
+        {
+            m_immunityNote = "engine backstop off - only intercepted damage is caught";
+            return;
+        }
+
+        if (m_immunityApplied)
         {
             return;
         }
 
-        // A configuration write, not a memory write.
-        //
-        // HitmanDamageReceivedMultiplier is a difficulty parameter the engine
-        // already owns, found by sweeping the shipping binary's strings. Scaled
-        // to zero it makes the player take nothing, through the same path the
-        // console and HMA.ini's ConsoleCmd lines use - so it needs no address
-        // and behaves identically on Steam and GOG.
-        //
-        // What it replaced was a write to a hardcoded god-mode flag that only
-        // existed for Steam, and whose address the SDK's own two mods disagree
-        // about. A wrong address there is a write into whatever else lives at
-        // that offset.
-        //
-        // This is the backstop, not the mechanism. The vtable patch is what
-        // catches ordinary damage; this covers the paths that never reach
-        // YouGotHit at all - falls, drowning, scripted kills.
-        const char* value = enable ? "0" : "1";
+        // Every path below this either writes or refuses, and a refusal holds
+        // until something changes - Arm is what clears it.
+        m_immunityRefused = true;
 
-        const bool dispatched = ConfigVars::Set("HitmanDamageReceivedMultiplier", value);
+        // Steam only. The address is the SDK's, and every address the SDK has
+        // is for the build it was written against; the GOG executable has a
+        // different layout, so the same offset there is a write into whatever
+        // else happens to live at it.
+        if (GameOffsets::GetBuild() != GameOffsets::Build::Steam)
+        {
+            m_immunityNote = std::format(
+                "engine backstop off on the {} build - the god-mode address is "
+                "only known for Steam. Falls and drowning still kill you.",
+                GameOffsets::GetBuildName());
 
-        // Whether the variable exists is not knowable from the call - the
-        // dispatcher returns nothing. Reading it back is the only way, and
-        // that is what the diagnostics panel is for.
-        m_diagnostic += dispatched
-            ? "; damage multiplier dispatched"
-            : "; damage multiplier dispatch faulted";
+            return;
+        }
+
+        int* flag = reinterpret_cast<int*>(GameOffsets::GetModuleBase() + kPlayerGodModeOffset);
+
+        if (!BuildInfo::Get().Contains(flag))
+        {
+            m_immunityNote = "god-mode flag is outside HMA.exe - not writing";
+            return;
+        }
+
+        // It is a bool the engine stores in an int, so anything else means we
+        // are looking at the wrong thing and should keep our hands off it.
+        const int previous = *flag;
+
+        if (previous != 0 && previous != 1)
+        {
+            m_immunityNote = std::format(
+                "god-mode flag reads {} rather than 0 or 1 - not writing to it",
+                previous);
+
+            return;
+        }
+
+        m_immunityPrevious = previous;
+        *flag              = 1;
+        m_immunityApplied  = true;
+        m_immunityRefused  = false;
+
+        m_immunityNote = previous == 1
+            ? "god-mode flag was already set - left on"
+            : "god-mode flag set, so falls and scripted kills cannot end the run";
     }
 
     bool DownedState::DamageFromHit(const void* hitInfo, float& outDamage) const
@@ -386,8 +462,9 @@ namespace Coop::Game
 
         if (m_phase != DownedPhase::Alive)
         {
-            // Already down. Further hits land on someone the engine cannot
-            // see anyway; ignoring them keeps the counter honest.
+            // Down, or just up and still inside the grace window. Either way
+            // the hit is counted and costs nothing - being dropped again in
+            // the second after standing up is a loop, not a fight.
             return;
         }
 
@@ -422,6 +499,14 @@ namespace Coop::Game
             return;
         }
 
+        // The backstop checkbox is in the panel, so it can change between
+        // arming and now. Refusals are remembered, so this does not re-decide
+        // an unwritable flag every frame.
+        if (m_armed && !m_immunityRefused && m_settings.alsoUseEngineImmunity != m_immunityApplied)
+        {
+            ApplyEngineImmunity(m_settings.alsoUseEngineImmunity);
+        }
+
         // The second signal. Falls, drowning and scripted kills very likely
         // never reach YouGotHit, so if the engine says dead in spite of
         // everything above, that is a death and it is treated as one.
@@ -446,8 +531,21 @@ namespace Coop::Game
             return;
         }
 
-        if (m_phase != DownedPhase::Alive)
+        // Getting back up. This used to be where the state machine ended: the
+        // phase was set to Recovering and nothing ever set it back, so the
+        // first revive left the player permanently unable to take damage or go
+        // down again. It is a window now, and the way out of it is here.
+        if (m_phase == DownedPhase::Recovering)
         {
+            m_recoveringSeconds += deltaSeconds;
+
+            if (m_recoveringSeconds >= m_settings.recoveryGraceSeconds)
+            {
+                m_phase             = DownedPhase::Alive;
+                m_recoveringSeconds = 0.f;
+                m_sinceLastHit      = 0.f;
+            }
+
             return;
         }
 
@@ -467,10 +565,11 @@ namespace Coop::Game
             return;
         }
 
-        m_phase         = DownedPhase::Recovering;
-        m_hitPoints     = m_settings.maxHitPoints;
-        m_sinceLastHit  = 0.f;
-        m_downedSeconds = 0.f;
+        m_phase             = DownedPhase::Recovering;
+        m_hitPoints         = m_settings.maxHitPoints;
+        m_sinceLastHit      = 0.f;
+        m_downedSeconds     = 0.f;
+        m_recoveringSeconds = 0.f;
     }
 
     void DownedState::ReviveOnCheckpoint()

@@ -167,7 +167,8 @@ namespace Coop::Game
 
     void WorldProbe::UpdateActors()
     {
-        m_aliveActorCount = 0;
+        m_aliveActorCount  = 0;
+        m_deadFlaggedCount = 0;
 
         if (!ActorManager)
         {
@@ -176,15 +177,17 @@ namespace Coop::Game
 
         TArrayRef<TEntityRef<ZActor>> actors = ActorManager->GetAliveActors();
 
-        m_aliveActorCount = static_cast<uint32_t>(actors.Size());
+        const size_t listSize = actors.Size();
+
+        m_aliveActorCount = static_cast<uint32_t>(listSize);
 
         // The rule that makes this safe: only pointers taken from *this*
         // frame's list are ever dereferenced. Actor pointers do not survive a
-        // scene reload, so nothing is kept but names.
-        std::unordered_map<std::string, bool> current;
-        current.reserve(actors.Size());
+        // scene reload, so nothing is kept but names and positions.
+        std::unordered_map<std::string, Sighting> current;
+        current.reserve(listSize);
 
-        for (size_t i = 0; i < actors.Size(); ++i)
+        for (size_t i = 0; i < listSize; ++i)
         {
             ZActor* actor = actors[i].GetRawPointer();
 
@@ -204,28 +207,76 @@ namespace Coop::Game
             std::string name(text);
             const bool  dead = actor->IsDead();
 
-            current[name] = !dead;
+            Sighting sighting;
+            sighting.alive    = !dead;
+            sighting.position = actor->GetWorldPosition();
+
+            const auto previous = m_actorsByName.find(name);
+            const bool wasAlive = previous != m_actorsByName.end() && previous->second.alive;
+
+            current[name] = sighting;
 
             if (!dead)
             {
                 continue;
             }
 
-            const auto previous = m_actorAliveByName.find(name);
+            ++m_deadFlaggedCount;
 
-            // Alive last frame, dead now. Names are not guaranteed unique in a
-            // scene, so this is a feed, not a ledger.
-            if (previous != m_actorAliveByName.end() && previous->second)
+            // Alive last frame, flagged dead now. Names are not guaranteed
+            // unique in a scene, so this is a feed, not a ledger.
+            if (wasAlive)
             {
                 ActorDeath death;
                 death.name     = name;
-                death.position = actor->GetWorldPosition();
+                death.position = sighting.position;
 
                 m_pendingDeaths.push_back(std::move(death));
+                ++m_deathsByFlag;
             }
         }
 
-        m_actorAliveByName = std::move(current);
+        // The other signal. The engine calls this list its *alive* actors, and
+        // it may well drop an actor the moment it dies rather than leaving it
+        // there with a flag set - in which case the loop above never fires and
+        // nothing is ever reported.
+        //
+        // Guarded three ways, because leaving the list is also what streaming
+        // out and a scene teardown look like: there has to be a player, the
+        // list has to still hold roughly what it held before, and the actor has
+        // to have been alive rather than already dead when we last saw it.
+        const bool listIsStable = !m_actorsByName.empty()
+                               && listSize > 0
+                               && listSize + 4 >= m_actorsByName.size();
+
+        if (m_hasPlayer && listIsStable)
+        {
+            for (const auto& [name, sighting] : m_actorsByName)
+            {
+                if (!sighting.alive || current.contains(name))
+                {
+                    continue;
+                }
+
+                ActorDeath death;
+                death.name     = name;
+                death.position = sighting.position;
+                death.vanished = true;
+
+                m_pendingDeaths.push_back(std::move(death));
+                ++m_deathsByVanish;
+            }
+        }
+
+        m_actorsByName = std::move(current);
+    }
+
+    void WorldProbe::ForgetActors()
+    {
+        m_actorsByName.clear();
+        m_pendingDeaths.clear();
+
+        m_deadFlaggedCount = 0;
     }
 
     std::vector<ActorDeath> WorldProbe::DrainDeaths()

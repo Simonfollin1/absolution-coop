@@ -26,7 +26,7 @@ namespace Coop::Game
     {
         Alive       = 0,
         Downed      = 1,  // spectating, waiting for a way back in
-        Recovering  = 2,  // a revive condition fired, restoring control
+        Recovering  = 2,  // just got up - briefly immune, then Alive again
     };
 
     struct DownedSettings
@@ -46,14 +46,15 @@ namespace Coop::Game
         float fallbackDamagePerHit = 25.f;
 
         // Belt and braces for the damage paths that never reach YouGotHit -
-        // falls, drowning, scripted kills. Scales the engine's own received-
-        // damage multiplier to zero through the configuration system, which
-        // needs no address and works the same on Steam and GOG.
+        // falls, drowning, scripted kills. Sets the engine's own player
+        // god-mode flag, the same one the SDK's Player mod exposes as a
+        // checkbox, and puts back whatever was there when the mod lets go.
         //
-        // This replaced a write to a hardcoded god-mode address. That was
-        // Steam-only, and the SDK's own two mods disagree about where it is:
-        // Player says 0xD4F5E0, Actors says 0xD4D91C. Neither is confirmed,
-        // and a wrong one is a write into whatever else lives there.
+        // What this replaced was a write to HitmanDamageReceivedMultiplier
+        // through the configuration system, which did nothing at all: that name
+        // is a per-difficulty array in HMA.ini's [Difficulty] section, not a
+        // registered console variable. Enumerating all 1648 of them in the game
+        // is what proved it - it is not among them.
         bool alsoUseEngineImmunity = true;
 
         // Getting up again on your own, after this long, when nothing else has
@@ -64,6 +65,13 @@ namespace Coop::Game
         // exists when you are playing alone or when the whole session is down
         // at once. Set to zero to rely on those only.
         float selfReviveSeconds = 20.f;
+
+        // How long after getting up hits are ignored.
+        //
+        // Standing up inside the firefight that put you down and being dropped
+        // again in the same second is not a mechanic, it is a loop. This is the
+        // window to get behind something.
+        float recoveryGraceSeconds = 3.f;
     };
 
     class DownedState
@@ -107,7 +115,15 @@ namespace Coop::Game
         float DownedSeconds() const { return m_downedSeconds; }
         float SecondsUntilSelfRevive() const;
 
+        // How much of the post-revive grace window is left. Zero unless we are
+        // in it, which makes it safe to drive a HUD line straight off.
+        float SecondsOfGraceLeft() const;
+
         const std::string& Diagnostic() const { return m_diagnostic; }
+
+        // What the engine-level backstop actually managed to do, which is not
+        // the same question as whether the vtable patch armed.
+        const std::string& ImmunityNote() const { return m_immunityNote; }
 
         // Called from the replacement vtable entry. Public because the thunk
         // is a free function; not part of the interface anyone else should use.
@@ -135,13 +151,26 @@ namespace Coop::Game
         uint32_t    m_timesDowned  = 0;
         float       m_downedSeconds = 0.f;
 
+        // Time since standing up. Only meaningful in Recovering, which is a
+        // state Update() counts down and then leaves - it used to be one
+        // nothing ever left, which made the first revive permanent immunity.
+        float       m_recoveringSeconds = 0.f;
+
         bool        m_armed          = false;
         void**      m_patchedVtable  = nullptr;
         size_t      m_patchedSlot    = 0;
         void*       m_originalEntry  = nullptr;
         ZHitman5*   m_armedFor       = nullptr;
 
+        // The engine's own god-mode flag, and what was in it before we wrote.
+        // Refused means we looked and decided not to, which is a decision to
+        // remember rather than one to re-make sixty times a second.
+        bool        m_immunityApplied  = false;
+        bool        m_immunityRefused  = false;
+        int         m_immunityPrevious = 0;
+
         std::string m_diagnostic;
+        std::string m_immunityNote;
     };
 
     // The one instance the vtable thunk dispatches to. There is exactly one

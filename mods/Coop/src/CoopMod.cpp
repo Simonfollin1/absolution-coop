@@ -1,7 +1,11 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <cctype>
+#include <cstring>
 #include <format>
+#include <string>
+#include <vector>
 
 #include <Glacier/ZLevelManager.h>
 #include <Glacier/Player/ZHitman5.h>
@@ -15,12 +19,143 @@
 #include "Game/BuildInfo.h"
 #include "Memory/GameOffsets.h"
 #include "Game/ModPresence.h"
+#include "UI/CursorFocus.h"
 
 using namespace Coop;
 
 namespace
 {
     constexpr size_t kLogCapacity = 200;
+
+    // Every action the mod binds, with the key it takes when the ini does not
+    // say otherwise, and whether it wants the key held or tapped.
+    //
+    // Held is the whole reason this table exists rather than a call to
+    // ModInterface::AddBindings: that one compiles everything to tap(kb,key),
+    // and a spectator camera driven by taps moves in single steps no matter
+    // how long you lean on the key.
+    struct BindingSpec
+    {
+        const char* action;
+        const char* defaultKey;
+        bool        held;
+    };
+
+    constexpr BindingSpec kBindingSpecs[] = {
+        { "CoopToggle",          "f6",    false },
+        { "CoopFollow",          "f7",    false },
+        { "CoopMarker",          "f8",    false },
+        { "CoopSpectateLeft",    "left",  true  },
+        { "CoopSpectateRight",   "right", true  },
+        { "CoopSpectateUp",      "up",    true  },
+        { "CoopSpectateDown",    "down",  true  },
+        { "CoopSpectateCloser",  "pgup",  true  },
+        { "CoopSpectateFurther", "pgdn",  true  },
+    };
+
+    std::string Trim(const std::string& text)
+    {
+        const size_t first = text.find_first_not_of(" \t\r\n");
+
+        if (first == std::string::npos)
+        {
+            return {};
+        }
+
+        return text.substr(first, text.find_last_not_of(" \t\r\n") - first + 1);
+    }
+
+    std::vector<std::string> SplitOn(const std::string& text, char separator)
+    {
+        std::vector<std::string> parts;
+        size_t                   start = 0;
+
+        while (true)
+        {
+            const size_t at    = text.find(separator, start);
+            std::string  piece = Trim(text.substr(start, at == std::string::npos
+                                                        ? std::string::npos
+                                                        : at - start));
+
+            if (!piece.empty())
+            {
+                parts.push_back(std::move(piece));
+            }
+
+            if (at == std::string::npos)
+            {
+                break;
+            }
+
+            start = at + 1;
+        }
+
+        return parts;
+    }
+
+    // One "lctrl+f6" style hotkey, as the engine spells it. Modifiers are held
+    // and the last key carries the tap or hold, matching the shape the SDK
+    // generates for its own mods.
+    std::string HotkeyExpression(const std::string& hotkey, bool held)
+    {
+        const std::vector<std::string> parts = SplitOn(hotkey, '+');
+
+        if (parts.empty())
+        {
+            return {};
+        }
+
+        const char* verb = held ? "hold" : "tap";
+        std::string primary = std::format("{}(kb,{})", verb, parts.back());
+
+        if (parts.size() == 1)
+        {
+            return primary;
+        }
+
+        std::string modifiers;
+
+        for (size_t i = 0; i + 1 < parts.size(); ++i)
+        {
+            modifiers += std::format(" hold(kb,{})", parts[i]);
+        }
+
+        // "& <mods> <key>" for one modifier; more than one has to be an
+        // explicit conjunction of holds first.
+        return parts.size() == 2
+            ? std::format("&{} {}", modifiers, primary)
+            : std::format("& |{} {}", modifiers, primary);
+    }
+
+    // A whole binding value, which may list alternatives separated by commas.
+    std::string BindingExpression(const std::string& action, const std::string& keys, bool held)
+    {
+        std::vector<std::string> alternatives;
+
+        for (const std::string& hotkey : SplitOn(keys, ','))
+        {
+            std::string expression = HotkeyExpression(hotkey, held);
+
+            if (!expression.empty())
+            {
+                alternatives.push_back(std::move(expression));
+            }
+        }
+
+        if (alternatives.empty())
+        {
+            return {};
+        }
+
+        std::string combined = alternatives.front();
+
+        for (size_t i = 1; i < alternatives.size(); ++i)
+        {
+            combined = std::format("| {} {}", combined, alternatives[i]);
+        }
+
+        return std::format("{}={};", action, combined);
+    }
 
     ImVec4 StatusColour(Net::SessionMode mode)
     {
@@ -87,10 +222,7 @@ void CoopMod::OnEngineInitialized()
     GameLoopManager->RegisterForFrameUpdate(delegate, 1);
 
     // Bindings come from mods/Coop.ini's [Bindings] section.
-    // GenerateBindingExpression is protected and unexported, so building the
-    // expression here would not link against the SDK DLL - AddBindings is the
-    // intended route and the only one available.
-    AddBindings();
+    InstallBindings();
 
     m_toggleAction = ZInputAction("CoopToggle");
     m_followAction = ZInputAction("CoopFollow");
@@ -127,6 +259,73 @@ void CoopMod::OnEngineInitialized()
     }
 }
 
+void CoopMod::InstallBindings()
+{
+    // mINI's operator[] inserts, so the ini having no [Bindings] at all still
+    // reads as an empty section rather than as an error - which is what we
+    // want: the defaults below then apply on their own.
+    auto& section = iniStructure["Bindings"];
+
+    if (section.has("EnableBindings") && Trim(section.get("EnableBindings")) == "false")
+    {
+        m_bindingsEnabled = false;
+
+        AddLogLine("Keys are off (EnableBindings = false in mods\\Coop.ini). "
+                   "Open the panel from the SDK menu instead.");
+
+        return;
+    }
+
+    // LoadConfiguration only sets modName when it found the ini, so an empty
+    // one means mods\Coop.ini is not installed. The defaults above still bind;
+    // saying so is what turns "my keys do nothing" into something fixable.
+    if (modName.empty())
+    {
+        AddLogLine("mods\\Coop.ini was not found, so the built-in keys apply: "
+                   "F6 panel, F7 get up or follow, F8 marker.");
+    }
+
+    std::string expression = (modName.empty() ? std::string("Coop") : modName) + "Input={";
+
+    for (const BindingSpec& spec : kBindingSpecs)
+    {
+        std::string keys = section.has(spec.action) ? Trim(section.get(spec.action)) : std::string();
+
+        if (keys.empty())
+        {
+            keys = spec.defaultKey;
+        }
+
+        expression += BindingExpression(spec.action, keys, spec.held);
+
+        std::string label = keys;
+        std::transform(label.begin(), label.end(), label.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+
+        if      (std::strcmp(spec.action, "CoopToggle") == 0) m_keyToggle = label;
+        else if (std::strcmp(spec.action, "CoopFollow") == 0) m_keyFollow = label;
+        else if (std::strcmp(spec.action, "CoopMarker") == 0) m_keyMarker = label;
+    }
+
+    expression += "};";
+
+    m_bindingExpression = expression;
+
+    if (!InputActionManager)
+    {
+        AddLogLine("No input action manager - keys will not work this run");
+        return;
+    }
+
+    m_bindingsAccepted = InputActionManager->AddBindings(expression.c_str());
+
+    if (!m_bindingsAccepted)
+    {
+        AddLogLine("The engine rejected the key bindings. Check the Diagnostics "
+                   "tab for the expression it was given.");
+    }
+}
+
 void CoopMod::AddLogLine(const std::string& line)
 {
     m_log.push_back(line);
@@ -160,7 +359,18 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
 
     if (toggleDown && !m_prevToggle)
     {
-        m_isOpen = !m_isOpen;
+        // Opens, rather than toggles, and asks for the cursor on the way.
+        //
+        // The SDK turns the game's bindings off while it holds the keyboard,
+        // so this key can only ever fire when the SDK does *not* have focus -
+        // which is also exactly when the panel is not being drawn. It used to
+        // toggle a flag under those conditions, which meant pressing it showed
+        // nothing and pressing it twice showed nothing twice.
+        //
+        // Closing is the key left of 1, or the window's own X.
+        m_isOpen = true;
+
+        UI::RequestImGuiFocus();
     }
 
     m_prevToggle = toggleDown;
@@ -178,6 +388,13 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
     // Markers fade on their own clock, and should keep fading after a session
     // ends rather than hanging in the world.
     m_avatars.TickMarkers(deltaSeconds);
+
+    // Both of these used to sit below the session check, which meant the marker
+    // key and the kill feed did nothing at all until somebody else connected -
+    // including while you were testing the mod on your own, where the whole
+    // question is whether the keys work.
+    UpdateMarkerKey();
+    UpdateKillFeed();
 
     if (!m_session.IsActive())
     {
@@ -197,48 +414,6 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
                                   localEvent))
     {
         m_session.SendEvent(localEvent);
-    }
-
-    // A marker is placed where the player is standing. Placing it wherever
-    // they are looking would be better and needs a raycast; this needs
-    // nothing, and "come here" is most of what anyone uses a ping for.
-    const bool markerDown = m_markerAction.Digital();
-
-    if (markerDown && !m_prevMarker && m_probe.HasPlayer())
-    {
-        const float4& position = m_probe.PlayerPosition();
-
-        Net::EventMessage marker;
-        marker.type = Net::EventType::Marker;
-        marker.x    = position.x;
-        marker.y    = position.y;
-        marker.z    = position.z;
-        marker.text = "marked";
-
-        m_session.SendEvent(marker);
-
-        // Shown locally straight away rather than waiting for it to come back.
-        m_avatars.AddMarker(SVector3(position.x, position.y, position.z),
-                            "you", m_session.Status().localPeerId);
-    }
-
-    m_prevMarker = markerDown;
-
-    // Anyone who died in the local world. Each client only ever reports its
-    // own, which is the only honest thing it can do when the worlds are not
-    // shared.
-    for (const Game::ActorDeath& death : m_probe.DrainDeaths())
-    {
-        Net::EventMessage event;
-        event.type = Net::EventType::ActorDied;
-        event.x    = death.position.x;
-        event.y    = death.position.y;
-        event.z    = death.position.z;
-        event.text = death.name;
-
-        m_session.SendEvent(event);
-
-        AddLogLine(std::format("{} down", Game::PeerAvatars::SanitiseForDisplay(death.name, 40)));
     }
 
     const bool followDown = m_followAction.Digital();
@@ -272,6 +447,65 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
                      SVector3(position.x, position.y, position.z),
                      m_probe.LocalState().level,
                      m_probe.LocalState().section);
+}
+
+void CoopMod::UpdateMarkerKey()
+{
+    // A marker is placed where the player is standing. Placing it wherever they
+    // are looking would be better and needs a raycast; this needs nothing, and
+    // "come here" is most of what anyone uses a ping for.
+    const bool markerDown = m_markerAction.Digital();
+
+    if (markerDown && !m_prevMarker && m_probe.HasPlayer())
+    {
+        const float4& position = m_probe.PlayerPosition();
+
+        // Drawn locally either way. Alone that is the whole of it, and it is
+        // also how anyone checks the key is reaching the mod at all.
+        m_avatars.AddMarker(SVector3(position.x, position.y, position.z),
+                            "you", m_session.Status().localPeerId);
+
+        if (m_session.IsActive())
+        {
+            Net::EventMessage marker;
+            marker.type = Net::EventType::Marker;
+            marker.x    = position.x;
+            marker.y    = position.y;
+            marker.z    = position.z;
+            marker.text = "marked";
+
+            m_session.SendEvent(marker);
+        }
+        else
+        {
+            AddLogLine("Marker placed. Nobody else is in the session to see it.");
+        }
+    }
+
+    m_prevMarker = markerDown;
+}
+
+void CoopMod::UpdateKillFeed()
+{
+    // Anyone who died in the local world. Each client only ever reports its
+    // own, which is the only honest thing it can do when the worlds are not
+    // shared.
+    for (const Game::ActorDeath& death : m_probe.DrainDeaths())
+    {
+        if (m_session.IsActive())
+        {
+            Net::EventMessage event;
+            event.type = Net::EventType::ActorDied;
+            event.x    = death.position.x;
+            event.y    = death.position.y;
+            event.z    = death.position.z;
+            event.text = death.name;
+
+            m_session.SendEvent(event);
+        }
+
+        AddLogLine(std::format("{} down", Game::PeerAvatars::SanitiseForDisplay(death.name, 40)));
+    }
 }
 
 void CoopMod::PublishLocalState()
@@ -354,6 +588,10 @@ void CoopMod::UpdateSceneTransition()
         // GameOffsets caches which pages it has probed, and a level change is
         // exactly when those pages go back to the allocator.
         GameOffsets::InvalidateProbeCache();
+
+        // Everyone in the old scene is about to stop being listed. That is not
+        // a massacre, it is a level change.
+        m_probe.ForgetActors();
     }
 
     if ((playerReplaced || areaChanged) && hitman)
@@ -466,7 +704,7 @@ void CoopMod::UpdateDownedFlow(float deltaSeconds)
 
 void CoopMod::OnDrawMenu()
 {
-    if (ImGui::MenuItem("Co-op", "F6", m_isOpen))
+    if (ImGui::MenuItem("Co-op", m_bindingsEnabled ? m_keyToggle.c_str() : nullptr, m_isOpen))
     {
         m_isOpen = !m_isOpen;
     }
@@ -548,12 +786,15 @@ void CoopMod::RenderHudOverlay()
 
             if (untilUp > 0.f)
             {
-                ImGui::TextDisabled("Up in %.0fs, or press the follow key", untilUp);
+                ImGui::TextDisabled("Up in %.0fs, or press %s now", untilUp, m_keyFollow.c_str());
             }
             else
             {
-                ImGui::TextDisabled("Back in at the next checkpoint");
+                ImGui::TextDisabled("Press %s to get up, or wait for a checkpoint",
+                                    m_keyFollow.c_str());
             }
+
+            ImGui::TextDisabled("Arrow keys look around, PgUp and PgDn move in and out");
         }
 
         if (pending.active)
@@ -841,6 +1082,25 @@ void CoopMod::RenderRulesTab()
         ImGui::SliderFloat("Regen delay", &downed.regenDelaySeconds, 0.f, 20.f, "%.1f s");
         ImGui::SliderFloat("Get up by yourself after", &downed.selfReviveSeconds,
                            0.f, 120.f, "%.0f s");
+        ImGui::SliderFloat("Immune after getting up", &downed.recoveryGraceSeconds,
+                           0.f, 15.f, "%.1f s");
+
+        ImGui::Checkbox("Also set the engine's god-mode flag",
+                        &downed.alsoUseEngineImmunity);
+
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip(
+                "The backstop for damage that never reaches the interception:\n"
+                "falls, drowning, scripted kills. Without it those still run the\n"
+                "engine's death sequence, which reloads a checkpoint and resets\n"
+                "your whole copy of the level while everyone else carries on.\n\n"
+                "It is the same flag the SDK's Player mod exposes, and it is put\n"
+                "back the way it was when the mod lets go. Steam only - the\n"
+                "address is not known for the GOG build.");
+        }
+
+        ImGui::TextDisabled("%s", Game::TheDownedState().ImmunityNote().c_str());
 
         if (downed.selfReviveSeconds <= 0.f)
         {
@@ -928,10 +1188,58 @@ void CoopMod::RenderDiagnosticsTab()
 
     ImGui::SeparatorText("Game");
     ImGui::Text("%s", build.Describe().c_str());
-    ImGui::Text("Chapter %u, section %u, jump point %d",
+    ImGui::Text("Chapter %u, section %u, checkpoint %d",
                 m_probe.LocalState().level, m_probe.LocalState().section,
                 m_probe.CurrentJumpPoint());
-    ImGui::Text("Alive actors: %u (engine caps this list at 50)", m_probe.AliveActorCount());
+
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetTooltip(
+            "The engine calls these jump points: numbered restart positions the\n"
+            "level defines, one per checkpoint. It is what \"jump to where the\n"
+            "others are\" moves you to, and it is the only unit of progress the\n"
+            "game exposes to us.\n\n"
+            "It only moves when a real checkpoint fires - the on-screen kind.\n"
+            "Walking into the next part of the map is not one of those, so\n"
+            "seeing 0 while the level clearly moved on is normal.");
+    }
+
+    ImGui::SeparatorText("Keys");
+
+    if (!m_bindingsEnabled)
+    {
+        ImGui::TextColored(ImVec4(1.f, 0.80f, 0.35f, 1.f),
+                           "off - EnableBindings = false in mods\\Coop.ini");
+    }
+    else if (m_bindingsAccepted)
+    {
+        ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.f), "registered");
+    }
+    else
+    {
+        ImGui::TextColored(ImVec4(1.f, 0.45f, 0.45f, 1.f), "the engine did not accept them");
+    }
+
+    ImGui::Text("%s panel, %s get up or follow, %s marker, arrows to spectate",
+                m_keyToggle.c_str(), m_keyFollow.c_str(), m_keyMarker.c_str());
+
+    ImGui::TextWrapped(
+        "None of them do anything while this panel has focus: the SDK switches "
+        "the game's input off whenever it holds the keyboard. Close it with the "
+        "key left of 1, then press them.");
+
+    if (!m_bindingExpression.empty())
+    {
+        ImGui::TextDisabled("%s", m_bindingExpression.c_str());
+    }
+
+    ImGui::SeparatorText("Actors");
+    ImGui::Text("Listed as alive: %u (the engine caps this list at 50), %u flagged dead",
+                m_probe.AliveActorCount(), m_probe.DeadFlaggedCount());
+    ImGui::Text("Deaths seen: %u by the dead flag, %u by leaving the list",
+                m_probe.DeathsByFlag(), m_probe.DeathsByVanish());
+    ImGui::TextDisabled("Whether a killed actor stays listed with a flag set or");
+    ImGui::TextDisabled("simply leaves is not documented, so both are counted.");
 
     ImGui::SeparatorText("Damage interception");
 
@@ -945,14 +1253,25 @@ void CoopMod::RenderDiagnosticsTab()
     }
 
     ImGui::TextWrapped("%s", downed.Diagnostic().c_str());
+    ImGui::TextWrapped("%s", downed.ImmunityNote().c_str());
+
     ImGui::Text("Health %.0f / %.0f, %u hits taken, downed %u times",
                 downed.HitPoints(), downed.Settings().maxHitPoints,
                 downed.HitsTaken(), downed.TimesDowned());
+
+    ImGui::Text("State: %s",
+                downed.Phase() == Game::DownedPhase::Downed     ? "down"
+              : downed.Phase() == Game::DownedPhase::Recovering ? "just up, briefly immune"
+                                                                : "up");
 
     if (downed.IsDowned())
     {
         ImGui::Text("Down for %.0fs, self-revive in %.0fs",
                     downed.DownedSeconds(), downed.SecondsUntilSelfRevive());
+    }
+    else if (downed.SecondsOfGraceLeft() > 0.f)
+    {
+        ImGui::Text("Immune for another %.1fs", downed.SecondsOfGraceLeft());
     }
 
     ImGui::SeparatorText("Network");

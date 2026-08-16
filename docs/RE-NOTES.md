@@ -58,11 +58,30 @@ RTTI route replaced it rather than supplementing it.
 None needed reverse engineering; all three were sitting in the strings.
 
 **`HitmanDamageReceivedMultiplier.EASY|MEDIUM|HARD|EXPERT`** is an `HMA.ini`
-`[Difficulty]` parameter. Set it to zero and the player takes no damage, with
-no memory write at all. That is a better invulnerability than the god-mode
-poke: the SDK's own two mods disagree about that address (`0xD4F5E0` in Player,
-`0xD4D91C` in Actors), both are Steam-only, and neither has been confirmed.
-A config line works on GOG too.
+`[Difficulty]` parameter: one line per difficulty, each holding 58
+semicolon-separated values indexed by progression through the campaign. Setting
+it to zero there makes the player take no damage with no memory write at all.
+
+What it is **not** is a runtime console variable, which is what this document
+claimed for a while and what the mod was written against. Enumerating every
+variable the engine has registered, in the game, returned 1648 of them, and it
+is not among them — filtering that list for "damage" gives `BloodBaseDamage`,
+`CCChainFailDamage`, `CCCounterFailDamage`, `CCHitmanDamage`,
+`CCSanchezChainFailDamage`, `CCSanchezCounterFailDamage`, `DebugDamageVal`,
+`DebugWeaponDamage`, `OutfitDamageReductionPerRating` and `SBDamageMultiplier`,
+and nothing else. So `ConfigVars::Set("HitmanDamageReceivedMultiplier", "0")`
+dispatched into nothing and the mod's engine-level backstop did nothing at all
+until this was noticed in-game.
+
+The difficulty table is still the cleanest lever, but it is an ini edit, and
+this mod does not edit anybody's `HMA.ini`. So the backstop is the SDK's own
+player god-mode flag at `0xD4F5E0` — the one `Mods/Player` writes behind its
+God Mode checkbox — set on arming and restored to whatever it held on the way
+out. Steam only, since the address is the SDK's and the SDK's addresses are for
+the build it was written against.
+
+`0xD4D91C`, in `Mods/Actors`, is not a competing answer for the same flag: that
+one is god mode for NPCs.
 
 Beside it: `HealthRegenPerSecond.*`, `CriticalHealthThreshold.*`,
 `HealthInterval0|1`, `NPCDamageReceivedMultiplier.*`, `CCHitmanDamage`.
@@ -495,6 +514,45 @@ Cross-check: `ZActor` derives from the same `ZHM5BaseCharacter`, so its
 constructor writes an `IBaseCharacter` vtable with the same shape and a
 different `YouGotHit`. Two independent sightings of the same index is a
 confirmation; one is an observation.
+
+---
+
+## 2c. Input, and why a hotkey can look dead
+
+Three separate things make a bound key do nothing, and the first two are not
+bugs in the mod:
+
+**The SDK owns the keyboard whenever its interface is up.**
+`ImGuiRenderer::OnMainWindowProc` calls `InputActionManager->SetEnabled(!imguiHasFocus)`
+on every message. So while any SDK panel has focus, every `ZInputAction::Digital()`
+in every mod returns false. A key can only ever fire with the SDK closed —
+which also means a mod's own panel is not being drawn at that moment, because
+`OnDrawUI` is handed `imguiHasFocus` and every mod gates on it.
+
+The consequence for a hotkey that opens a window: it must ask for focus at the
+same time, or it sets a flag and shows nothing. `UI::RequestImGuiFocus` posts
+the scan code left of `1` to the game window and lets the SDK's own handler do
+the work. It is only ever safe to call from a hotkey, for the reason above —
+if the hotkey fired, focus was elsewhere, so the post can only turn focus on.
+
+**`ModInterface::AddBindings` compiles every action to `tap(kb,key)`.** A tap
+is one frame of `Digital()` per press, which is right for a toggle and useless
+for anything held — a spectator camera bound that way nudges once and stops.
+The grammar has `hold(kb,key)`, but the SDK's generator never emits it, and
+`GenerateBindingExpression` is protected and not exported, so a mod that wants
+held keys has to build the block itself and hand it to
+`ZInputActionManager::AddBindings` directly. That is what `CoopMod::InstallBindings`
+does.
+
+**`LoadConfiguration` only sets `modName` if the ini exists.** `AddBindings`
+then builds the block as `Input={...}` with an empty name. Any mod that reaches
+`AddBindings` without its ini installed is binding into a nameless block.
+
+The accepted key tokens are the engine's, not Windows':
+`f1`–`f15`, `a`–`z`, `0`–`9`, `left`, `right`, `up`, `down`, `pgup`, `pgdn`,
+`home`, `end`, `prev`, `next`, `ins`, `del`, `space`, `tab`, `return`, `esc`,
+`lctrl`/`rctrl`, `lshift`/`rshift`, `lalt`/`ralt`, `lwin`/`rwin`, `tilde`,
+`grave`, `lbracket`, `rbracket`, `semicolon`, `apostrophe`, `slash`, `num0`–`num9`.
 
 ---
 

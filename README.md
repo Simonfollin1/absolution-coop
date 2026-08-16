@@ -4,10 +4,10 @@ Co-op for *Hitman: Absolution*.
 
 Built on [pavledev's HitmanAbsolutionSDK](https://github.com/pavledev/HitmanAbsolutionSDK).
 
-> **Heads up: this is untested in the game.** It builds and it packages, but
-> nobody has started Absolution with it loaded yet, so treat every feature
-> below as a claim rather than a fact. If you try it and tell me what broke,
-> that's the fastest way that changes.
+> **Heads up: only the single-player half has been played.** Damage
+> interception, going down, the spectator camera and getting back up all work
+> in the game. The networking has never been run against a second machine, so
+> treat everything about hosting and joining as a claim rather than a fact.
 
 ## What you get
 
@@ -26,7 +26,11 @@ bodies, disguises and alarms are local to each player too.
 Grab the latest [release](../../releases), extract it into the folder
 `HMA.exe` lives in, and start the game.
 
-`~` opens the SDK panel, `F6` opens co-op.
+`~` opens the SDK panel, `F6` opens co-op. `F7` gets you up when you're down,
+`F8` drops a marker, arrow keys move the camera while you're spectating.
+
+Keys only work while the SDK's interface is closed, because it switches the
+game's input off whenever it holds the keyboard.
 
 Needs 1.0.447.0 and the 32-bit Visual C++ 2015-2022 redistributable. Don't use
 it in Contracts.
