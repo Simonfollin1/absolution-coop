@@ -45,10 +45,16 @@ namespace Coop::Game
         // when SHitInfo's damage cannot be recovered - see DamageFromHit.
         float fallbackDamagePerHit = 25.f;
 
-        // Belt and braces: also poke the engine's own god mode where its
-        // address is known, so damage paths that never reach YouGotHit - falls,
-        // drowning, scripted kills - cannot end the run either.
-        bool alsoUseEngineGodMode = true;
+        // Belt and braces for the damage paths that never reach YouGotHit -
+        // falls, drowning, scripted kills. Scales the engine's own received-
+        // damage multiplier to zero through the configuration system, which
+        // needs no address and works the same on Steam and GOG.
+        //
+        // This replaced a write to a hardcoded god-mode address. That was
+        // Steam-only, and the SDK's own two mods disagree about where it is:
+        // Player says 0xD4F5E0, Actors says 0xD4D91C. Neither is confirmed,
+        // and a wrong one is a write into whatever else lives there.
+        bool alsoUseEngineImmunity = true;
     };
 
     class DownedState
@@ -98,7 +104,7 @@ namespace Coop::Game
     private:
         bool ValidateAndPatch(void** vtable, size_t slot);
         void GoDown();
-        void ApplyEngineGodMode(bool enable);
+        void ApplyEngineImmunity(bool enable);
 
         // Reads a damage figure out of SHitInfo. The struct's layout is
         // published for the 2012 development build and has not been confirmed

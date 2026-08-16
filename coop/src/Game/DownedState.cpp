@@ -8,6 +8,7 @@
 
 #include "Game/DownedState.h"
 #include "Game/BuildInfo.h"
+#include "Game/ConfigVars.h"
 
 namespace Coop::Game
 {
@@ -166,7 +167,7 @@ namespace Coop::Game
         m_hitPoints = m_settings.maxHitPoints;
         m_phase     = DownedPhase::Alive;
 
-        ApplyEngineGodMode(m_settings.alsoUseEngineGodMode);
+        ApplyEngineImmunity(true);
 
         return true;
     }
@@ -253,7 +254,7 @@ namespace Coop::Game
 
         if (m_armed)
         {
-            ApplyEngineGodMode(false);
+            ApplyEngineImmunity(false);
         }
 
         m_armed         = false;
@@ -262,43 +263,39 @@ namespace Coop::Game
         m_armedFor      = nullptr;
     }
 
-    void DownedState::ApplyEngineGodMode(bool enable)
+    void DownedState::ApplyEngineImmunity(bool enable)
     {
-        if (!m_settings.alsoUseEngineGodMode)
+        if (!m_settings.alsoUseEngineImmunity)
         {
             return;
         }
 
-        const BuildInfo& build = BuildInfo::Get();
+        // A configuration write, not a memory write.
+        //
+        // HitmanDamageReceivedMultiplier is a difficulty parameter the engine
+        // already owns, found by sweeping the shipping binary's strings. Scaled
+        // to zero it makes the player take nothing, through the same path the
+        // console and HMA.ini's ConsoleCmd lines use - so it needs no address
+        // and behaves identically on Steam and GOG.
+        //
+        // What it replaced was a write to a hardcoded god-mode flag that only
+        // existed for Steam, and whose address the SDK's own two mods disagree
+        // about. A wrong address there is a write into whatever else lives at
+        // that offset.
+        //
+        // This is the backstop, not the mechanism. The vtable patch is what
+        // catches ordinary damage; this covers the paths that never reach
+        // YouGotHit at all - falls, drowning, scripted kills.
+        const char* value = enable ? "0" : "1";
 
-        // Steam only, and even there the SDK's own two mods disagree about
-        // which address this is - Player says 0xD4F5E0, Actors says 0xD4D91C.
-        // Neither has been confirmed here, so this is a backstop for damage
-        // paths that never reach YouGotHit, not the mechanism. When the build
-        // is not Steam it simply does not run, and the vtable hook carries the
-        // feature on its own.
-        if (build.Build() != GameBuild::Steam)
-        {
-            return;
-        }
+        const bool dispatched = ConfigVars::Set("HitmanDamageReceivedMultiplier", value);
 
-        constexpr uintptr_t kGodModeOffset = 0xD4F5E0;
-
-        if (kGodModeOffset >= build.SizeOfImage())
-        {
-            return;
-        }
-
-        auto* flag = reinterpret_cast<int*>(build.ModuleBase() + kGodModeOffset);
-
-        __try
-        {
-            *flag = enable ? 1 : 0;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            // An address that is not writable is an address that is not this.
-        }
+        // Whether the variable exists is not knowable from the call - the
+        // dispatcher returns nothing. Reading it back is the only way, and
+        // that is what the diagnostics panel is for.
+        m_diagnostic += dispatched
+            ? "; damage multiplier dispatched"
+            : "; damage multiplier dispatch faulted";
     }
 
     bool DownedState::DamageFromHit(const void* hitInfo, float& outDamage) const

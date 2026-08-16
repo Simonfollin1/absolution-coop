@@ -15,6 +15,124 @@ contracts emulator independently patches. If that one lines up, the rest will.
 
 ---
 
+## 0. What a first pass over the real binary established
+
+Run 2026-08-16 with `docs/ghidra/HmaRecon.java` against Steam `HMA.exe`,
+image base `0x400000`, language `x86:LE:32:default`.
+
+**The address table is correct.** All thirty sampled addresses land on real
+function starts. Everything below rests on that and it held.
+
+**This binary carries RTTI, and the existing research says it does not.**
+`RESEARCH.md` states the class layouts come from leaked PDBs "inte från
+RTTI-dumpning", which was read as RTTI being absent. It is present: the image
+is full of MSVC type descriptors — `.?AVZHM5LocomotionRootState@@`,
+`.?AVZContract@@`, `.?AVZSharedSoundSensor@@`, `.?AVZHM5CameraProfileBlendDatabase@@`,
+and so on.
+
+Two consequences, and the second is the larger one:
+
+- Vtable recovery is exact rather than inferred. Every MSVC vtable is preceded
+  by a pointer to a `CompleteObjectLocator` naming its class, so the chain runs
+  name string → type descriptor → locator → vtable. `docs/ghidra/HmaRtti.java`
+  walks it.
+- **Class identification no longer depends on the leak.** The PDBs give richer
+  information — member names, types, offsets — but the class inventory and the
+  vtable ownership are recoverable from the shipping binary alone.
+
+**Walking a constructor for vtable stores does not work here.** The function at
+`ZHitman5::ZHitman5` (`0x21B130`) decompiles to three lines:
+
+```c
+void __fastcall FUN_0061b130(int param_1)
+{
+  if (param_1 != 0) { FUN_0051d720(); return; }
+}
+```
+
+A stub forwarding to `0x51D720`. The stores are further in. This is why the
+RTTI route replaced it rather than supplementing it.
+
+### Three levers found in the string sweep
+
+None needed reverse engineering; all three were sitting in the strings.
+
+**`HitmanDamageReceivedMultiplier.EASY|MEDIUM|HARD|EXPERT`** is an `HMA.ini`
+`[Difficulty]` parameter. Set it to zero and the player takes no damage, with
+no memory write at all. That is a better invulnerability than the god-mode
+poke: the SDK's own two mods disagree about that address (`0xD4F5E0` in Player,
+`0xD4D91C` in Actors), both are Steam-only, and neither has been confirmed.
+A config line works on GOG too.
+
+Beside it: `HealthRegenPerSecond.*`, `CriticalHealthThreshold.*`,
+`HealthInterval0|1`, `NPCDamageReceivedMultiplier.*`, `CCHitmanDamage`.
+The whole health model is configuration.
+
+**`_root.g_mcHealthBar`** is the Scaleform health bar. `ZHUDManager::GetHUD()`
+returns an `IScaleformPlayer*` and `GFxValue::GetMember` is at `0x19D5C0`, so
+the player's real health is readable through the HUD — no offset, no hunting
+for `ZHM5Health` in memory, and it cannot go stale against a patch.
+
+**`OnTakeDamage`, `OnHitInfo`, `DamageTaken`, `OnGetHealth`, `LowHealth`,
+`HealthReplenished`, `OnDrainHealthStarted`** read as entity *pin* names rather
+than functions. Pin ids are CRC32 of the name, and `SignalInputPin` /
+`SignalOutputPin` are at known addresses. Whether damage can be observed
+through a pin instead of a vtable patch is untested, and would be the cleaner
+mechanism if it works.
+
+### The config system is bigger than anyone wrote down
+
+The sweep is full of what look like registered console variables:
+
+```
+HealthRegenPerSecond.HARD          CriticalHealthThreshold.EXPERT
+NPC_MaxCharacterStrafeBlendSpeed   LocoTest_StrafeRunSpeed
+morpheme_DisableAnimation          ai_BehaviorTreeEvaluationsPerFrame
+HM5DisguiseLODDissolveMin          debugchannel_drawnpclocomotion
+DisguiseDetectionDistanceMultiplier.HARD    Disguise_MeterAttack
+```
+
+The SDK already exposes `ZConfigFloat`, `ZConfigInt` and `ZConfigCommand`, and
+both `ZConfigCommand::First` (`0xD86D0`) and `ZConfigCommand::ExecuteCommand`
+(`0x52EF10`) verified in section 1. `RESEARCH.md` lists "how far does the
+console reach" as an open question. It is not open — a mod can walk the chain
+at runtime and expose every engine variable in one panel, and that serves the
+camera, detection and speedrun mods equally.
+
+Fifteen functions call `ExecuteCommand`, and the string `"ConsoleCmd "` sits at
+`0xE88754`.
+
+### Morpheme node paths are literals in the binary
+
+`ZHM5LocomotionNetwork::GetNodeID` takes a path string, and the paths are all
+there:
+
+```
+RootNode|FullBody|Locomotion
+RootNode|FullBody|Locomotion|LocomotionAim|Aim|CrouchAim
+RootNode|UpperBodyOverride|Equip|EquipItem
+EmotionStates|Combat|Locomotion|Move|Combat_Run
+ControlledStates|HumanShield|Move|StrafeLeft
+```
+
+`LocomotionTransitEvents`, `strafe`, `UpperBodyEquip` and
+`UpperBodyOverrideWeight` each carry 243 references, which is the shape of a
+lookup table being filled in. That is the entry point for section 3.3.
+
+Also confirming the provenance: a build path string reads
+`d:\hitman5_delivery4\code\src\system\morpheme\...` — the same internal branch
+name as the leaked 2012 development build.
+
+### Not swept, worth adding
+
+The string groups covered locomotion, morpheme, health, AI, checkpoints and
+disguises. **Camera, rendering and post-processing were not swept**, which is
+the gap for the CinematicCamera mod — particularly anything around
+`ZRenderPostfilterParametersEntity` and the colour-correction palette whose
+byte packing was never established. Add a group and re-run.
+
+---
+
 ## 1. Import the symbols first
 
 ~110 named functions and globals are already known. Importing them turns a
