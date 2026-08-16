@@ -65,6 +65,11 @@ namespace Coop::Game
         // +0x644, so this deliberately disturbs both.
         bool Write(float value);
 
+        // The field as it stands right now, without disturbing anything this
+        // class remembers. Safe from either thread, and the only honest way to
+        // find out whether a write survived the game's own HUD pass.
+        float ReadRaw() const;
+
         // Copies the object the maximum lives in, so the log can show which
         // nearby float is the writable current health. Returns bytes copied.
         size_t SnapshotHealthObject(uint8_t* destination, size_t count) const;

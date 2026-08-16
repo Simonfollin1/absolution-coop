@@ -510,18 +510,6 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
     // trusted before the whole damage model is rebuilt on top of them.
     m_engineHealth.Update();
 
-    // The ring around the radar reads the engine's health, and the engine's
-    // health cannot move while the mod is intercepting damage - so the only
-    // health the player can actually see has been stuck at full the whole time.
-    // Writing the mod's own pool into it is what closes that gap, and it
-    // touches nothing the engine uses to decide anything.
-    if (m_driveHudHealth && m_engineHealth.Readable() && Game::TheDownedState().IsArmed())
-    {
-        const float max = m_engineHealth.Max() > 0.f ? m_engineHealth.Max() : 100.f;
-
-        m_engineHealth.Write(Game::TheDownedState().HitPointsFraction() * max);
-    }
-
     TraceWorldChanges();
     TraceKeys();
     AutoDumpWhenReady(deltaSeconds);
@@ -966,6 +954,36 @@ void CoopMod::AutoDumpWhenReady(float deltaSeconds)
     m_lastDumpPath = path;
 
     Diag::Log("automatic dump written to %s", path.c_str());
+
+    // One block, near the top of every log, answering every question anybody
+    // would otherwise have to open a panel to answer - which cannot be done
+    // while playing, because the SDK takes the keyboard the moment it has one
+    // open. Nobody should have to test by hand what the mod can test itself.
+    Diag::Log("");
+    Diag::Log("---- what the mod can tell you without being asked ----");
+    Diag::Log("  build           %s (%s)",
+              Game::BuildInfo::Get().Describe().c_str(), GameOffsets::GetBuildName());
+    Diag::Log("  keys            %s",
+              !m_bindingsEnabled ? "off in the ini"
+              : m_bindingsAccepted ? "registered and accepted"
+                                   : "REJECTED by the engine");
+    Diag::Log("  interception    %s | %s",
+              Game::TheDownedState().IsArmed() ? "armed" : "NOT ARMED",
+              Game::TheDownedState().Diagnostic().c_str());
+    Diag::Log("  engine backstop %s", Game::TheDownedState().ImmunityNote().c_str());
+    Diag::Log("  engine health   %s", m_engineHealth.Note().c_str());
+    Diag::Log("  health ring     %s",
+              m_driveHudHealth ? "driven from the mod's pool" : "left alone");
+    Diag::Log("  instinct        %s",
+              m_instinct.Readable() ? "focus controller readable"
+                                    : "focus controller UNREADABLE");
+    Diag::Log("  actor deaths    %u by flag, %u by leaving the list",
+              m_probe.DeathsByFlag(), m_probe.DeathsByVanish());
+    Diag::Log("  chapter         %u.%u, checkpoint %d",
+              m_probe.LocalState().level, m_probe.LocalState().section,
+              m_probe.CurrentJumpPoint());
+    Diag::Log("-------------------------------------------------------");
+    Diag::Log("");
     AddLogLine(std::format("Wrote {} by itself - no need to press anything", path));
 }
 
@@ -1275,6 +1293,15 @@ void CoopMod::OnDrawUI(const bool hasFocus)
 {
     m_loaded.OnDrawUI(hasFocus);
 
+    // The health ring, driven from here rather than from the frame update.
+    //
+    // Both were tried. A write from the game thread moved nothing, and the same
+    // write from a button on this thread moved the ring immediately - because
+    // this runs inside Present, after the game has finished its own HUD pass,
+    // and the frame update runs before it. Written there, the game overwrote it
+    // every frame before anyone saw it.
+    DriveHudHealth();
+
     // Before the rest: it is the game's feedback, not the mod's interface, and
     // it belongs behind everything the mod draws on top.
     RenderHurtOverlay();
@@ -1287,6 +1314,56 @@ void CoopMod::OnDrawUI(const bool hasFocus)
     }
 
     RenderWindow();
+}
+
+void CoopMod::DriveHudHealth()
+{
+    Game::DownedState& downed = Game::TheDownedState();
+
+    if (!m_driveHudHealth || !downed.Settings().enabled || !downed.IsArmed())
+    {
+        return;
+    }
+
+    if (!m_engineHealth.Readable() && m_engineHealth.Max() <= 0.f)
+    {
+        return;
+    }
+
+    const float max = m_engineHealth.Max() > 0.f ? m_engineHealth.Max() : 100.f;
+
+    // Reading before writing is the self-test. If the value still holds what we
+    // put there last frame, the write survives the game's own HUD pass and the
+    // ring is genuinely ours; if the game has put its own number back, it does
+    // not. Answered in the log, once, rather than by anybody watching a panel
+    // they cannot have open while playing.
+    if (m_hudDriveFrames == 60)
+    {
+        const float readBack = m_engineHealth.ReadRaw();
+        const float expected = m_lastRingWrite;
+
+        Diag::Log("ring readback: wrote %.2f, field holds %.2f - %s",
+                  expected, readBack,
+                  std::fabs(readBack - expected) < 0.5f
+                      ? "the write survives, the ring is ours"
+                      : "the game put its own value back, the ring is not ours");
+    }
+
+    if (m_hudDriveFrames < 1000)
+    {
+        ++m_hudDriveFrames;
+    }
+
+    m_lastRingWrite = downed.HitPointsFraction() * max;
+
+    m_engineHealth.Write(m_lastRingWrite);
+
+    if (!m_loggedHudDrive)
+    {
+        m_loggedHudDrive = true;
+
+        Diag::Log("driving the health ring from the mod's pool (max %.1f)", max);
+    }
 }
 
 void CoopMod::RenderHurtOverlay()

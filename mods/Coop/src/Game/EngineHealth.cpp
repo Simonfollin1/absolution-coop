@@ -179,6 +179,20 @@ namespace Coop::Game
             : std::format("{:.1f} from the HUD, maximum unreadable", current);
     }
 
+    float EngineHealth::ReadRaw() const
+    {
+        if (!HUDManager)
+        {
+            return -1.f;
+        }
+
+        float value = -1.f;
+
+        ReadFloatGuarded(reinterpret_cast<uintptr_t>(HUDManager) + kHudCurrentHealth, value);
+
+        return value;
+    }
+
     bool EngineHealth::Write(float value)
     {
         if (!HUDManager)

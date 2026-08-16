@@ -106,7 +106,18 @@ private:
     //
     // Half the answer. The other half is the health ring around the radar,
     // which is the engine's and still reads full; see Game/ScaleformProbe.h.
+    // Writes the mod's health into the field the ring is drawn from. Called
+    // from OnDrawUI rather than the frame update: the game rewrites that field
+    // during its own HUD pass, which happens between the two.
+    void DriveHudHealth();
+
     void RenderHurtOverlay();
+
+    // The screen you look at while you are down: a depleting ring, the seconds
+    // left, and what will get you up. Drawn rather than assembled from assets -
+    // ImGui has no SVG and needs none, and a countdown that is one arc and one
+    // number is better as code than as a file somebody has to ship.
+    void RenderDownedScreen();
 
     void AddLogLine(const std::string& line);
     std::string DescribeEvent(const Coop::Net::EventMessage& event) const;
@@ -213,8 +224,11 @@ private:
     // the pool still reads as a hit rather than as a slightly darker edge.
     // Writes the mod's pool into the field the health ring is drawn from, so
     // the only health the player can see is the one the mod is actually
-    // keeping. Off until somebody has watched the ring move.
-    bool     m_driveHudHealth = false;
+    // keeping. On: the write was proven in the game, the ring moved.
+    bool     m_driveHudHealth = true;
+    bool     m_loggedHudDrive = false;
+    int      m_hudDriveFrames = 0;
+    float    m_lastRingWrite  = -1.f;
 
     bool     m_showHurt    = true;
     float    m_hurtFlash   = 0.f;
