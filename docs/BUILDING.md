@@ -49,11 +49,10 @@ installs a detour, but that's worth knowing before you add one.
 ## Layout
 
 ```
-coop/
-  include/, src/
-    Net/         UDP protocol, socket, session. Star topology, host relays.
-    Game/        reads the engine, decides what to send and what to draw
-    CoopMod      the ModInterface, the lobby, the overlay
+include/, src/
+  Net/           UDP protocol, socket, session. Star topology, host relays.
+  Game/          reads the engine, decides what to send and what to draw
+  CoopMod        the ModInterface, the lobby, the overlay
 docs/
   RE-NOTES.md    engine findings, addresses, and what's still unknown
   ghidra/        the scripts that produced them

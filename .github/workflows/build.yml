@@ -4,7 +4,19 @@ on:
   push:
     branches: ["**"]
     tags: ["v*.*.*"]
+    # A README edit has no reason to spend twenty minutes compiling C++. The
+    # workflow itself is deliberately not ignored: a change to it should prove
+    # itself by running.
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
   pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+  workflow_dispatch:
 
 env:
   # MSVC 14.40 made std::mutex's constructor constexpr, and a binary built with
