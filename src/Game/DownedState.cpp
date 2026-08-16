@@ -129,13 +129,24 @@ namespace Coop::Game
         return std::clamp(m_hitPoints / m_settings.maxHitPoints, 0.f, 1.f);
     }
 
+    float DownedState::SecondsUntilSelfRevive() const
+    {
+        if (m_phase != DownedPhase::Downed || m_settings.selfReviveSeconds <= 0.f)
+        {
+            return 0.f;
+        }
+
+        return std::max(0.f, m_settings.selfReviveSeconds - m_downedSeconds);
+    }
+
     void DownedState::ResetForNewSession()
     {
         m_phase        = DownedPhase::Alive;
         m_hitPoints    = m_settings.maxHitPoints;
         m_sinceLastHit = 0.f;
-        m_hitsTaken    = 0;
-        m_timesDowned  = 0;
+        m_hitsTaken     = 0;
+        m_timesDowned   = 0;
+        m_downedSeconds = 0.f;
     }
 
     bool DownedState::Arm(ZHitman5* hitman)
@@ -405,7 +416,8 @@ namespace Coop::Game
             return;
         }
 
-        m_phase = DownedPhase::Downed;
+        m_phase         = DownedPhase::Downed;
+        m_downedSeconds = 0.f;
         ++m_timesDowned;
     }
 
@@ -423,6 +435,21 @@ namespace Coop::Game
         {
             m_hitPoints = 0.f;
             GoDown();
+        }
+
+        if (m_phase == DownedPhase::Downed)
+        {
+            m_downedSeconds += deltaSeconds;
+
+            // The way back that does not depend on anybody else. Without it,
+            // playing alone or going down as a group is a state with no exit.
+            if (m_settings.selfReviveSeconds > 0.f &&
+                m_downedSeconds >= m_settings.selfReviveSeconds)
+            {
+                ReviveOnSceneChange();
+            }
+
+            return;
         }
 
         if (m_phase != DownedPhase::Alive)
@@ -446,9 +473,10 @@ namespace Coop::Game
             return;
         }
 
-        m_phase        = DownedPhase::Recovering;
-        m_hitPoints    = m_settings.maxHitPoints;
-        m_sinceLastHit = 0.f;
+        m_phase         = DownedPhase::Recovering;
+        m_hitPoints     = m_settings.maxHitPoints;
+        m_sinceLastHit  = 0.f;
+        m_downedSeconds = 0.f;
     }
 
     void DownedState::ReviveOnCheckpoint()

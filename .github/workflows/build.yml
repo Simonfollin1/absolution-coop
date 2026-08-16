@@ -78,6 +78,57 @@ jobs:
             Set-Content $path $txt -NoNewline
           }
 
+      # We deliberately ship without assets/HashMap.txt - 28 MB of hash-to-path
+      # table that nothing here looks anything up in - and the SDK reports its
+      # absence at ERROR, which in an otherwise clean log reads as something
+      # being broken. ResourceIDRegistry::Load already handles the file being
+      # missing. Same sentence, quieter level.
+      - name: Patch SDK ResourceIDRegistry (do not shout about a file we omit)
+        shell: pwsh
+        run: |
+          $path = "sdk/HitmanAbsolutionSDK/src/Registry/ResourceIDRegistry.cpp"
+          $txt  = Get-Content $path -Raw
+          $from = 'Logger::Level::Error, "Failed to open HashMap.txt!"'
+          $to   = 'Logger::Level::Info, "HashMap.txt is not installed - resource names stay as hashes. This is expected."'
+
+          if (-not $txt.Contains($from)) {
+            throw "ResourceIDRegistry.cpp no longer logs what this patch expects - check it before shipping"
+          }
+
+          Set-Content $path $txt.Replace($from, $to) -NoNewline
+
+      # The panel this package puts behind the tilde key belongs to this mod as
+      # far as anyone installing it is concerned, so it says so. The credit line
+      # underneath is not decoration: this is a modified build of somebody
+      # else's GPL project, and the panel is the only place a user would ever
+      # see whose engine work it rests on.
+      - name: Patch SDK main menu title
+        shell: pwsh
+        run: |
+          $path = "sdk/HitmanAbsolutionSDK/src/UI/MainMenu.cpp"
+          $txt  = Get-Content $path -Raw
+          $from = 'ImGui::Text("Hitman Absolution SDK");'
+          $to   = 'ImGui::Text("Absolution Co-op");' + "`n" + '    ImGui::TextDisabled("built on HitmanAbsolutionSDK by pavledev");'
+
+          if (-not $txt.Contains($from)) {
+            throw "MainMenu.cpp no longer prints what this patch expects - check it before shipping"
+          }
+
+          Set-Content $path $txt.Replace($from, $to) -NoNewline
+
+      # Three defects in the SDK and its loader, all found by whoever debugged
+      # the "click Play four times before it starts" problem. The important one
+      # is the proxy calling LoadLibrary from DllMain, which is forbidden: the
+      # loader lock is held for the duration of DllMain and LoadLibrary wants
+      # the same lock. Most of the time the loader untangles it. The rest of the
+      # time the game never finishes starting, and the SDK never appears.
+      #
+      # The script asserts the SDK still looks the way each patch expects and
+      # fails the build rather than silently doing nothing.
+      - name: Patch SDK startup (see .github/scripts/patch-sdk-startup.ps1)
+        shell: pwsh
+        run: .\mod\.github\scripts\patch-sdk-startup.ps1 -SdkRoot sdk
+
       - name: Bootstrap vcpkg
         shell: pwsh
         run: |

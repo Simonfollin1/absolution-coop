@@ -357,6 +357,34 @@ void CoopMod::UpdateDownedFlow(float deltaSeconds)
 
     if (downed.Phase() == Game::DownedPhase::Downed)
     {
+        // Playing alone there is nobody to be down for, and none of the ways
+        // back exist: no teammate will reach a checkpoint and no scene will
+        // change until you make one. Show what being down looks like, then let
+        // go, rather than trapping somebody who was only trying the mod out.
+        constexpr float kSoloDownedSeconds = 5.f;
+
+        if (!m_session.IsActive() && downed.DownedSeconds() >= kSoloDownedSeconds)
+        {
+            downed.ReviveOnSceneChange();
+            AddLogLine("Up again - nobody else in the session to wait for");
+
+            return;
+        }
+
+        // The confirm key doubles as "get up now" while down. Waiting out a
+        // timer you did not choose is not a mechanic.
+        if (m_followAction.Digital() && !m_prevFollow)
+        {
+            downed.ReviveOnSceneChange();
+            AddLogLine("Back up");
+
+            m_prevFollow = true;
+
+            return;
+        }
+
+        m_prevFollow = m_followAction.Digital();
+
         m_spectator.Enter();
 
         // Watch a teammate in this level if there is one, otherwise our own
@@ -489,7 +517,17 @@ void CoopMod::RenderHudOverlay()
         {
             ImGui::Separator();
             ImGui::TextColored(ImVec4(1.f, 0.45f, 0.45f, 1.f), "DOWN");
-            ImGui::TextDisabled("Back in at the next checkpoint");
+
+            const float untilUp = Game::TheDownedState().SecondsUntilSelfRevive();
+
+            if (untilUp > 0.f)
+            {
+                ImGui::TextDisabled("Up in %.0fs, or press the follow key", untilUp);
+            }
+            else
+            {
+                ImGui::TextDisabled("Back in at the next checkpoint");
+            }
         }
 
         if (pending.active)
@@ -775,6 +813,16 @@ void CoopMod::RenderRulesTab()
         ImGui::SliderFloat("Cost per hit", &downed.fallbackDamagePerHit, 1.f, 100.f, "%.0f");
         ImGui::SliderFloat("Regeneration", &downed.regenPerSecond, 0.f, 60.f, "%.0f /s");
         ImGui::SliderFloat("Regen delay", &downed.regenDelaySeconds, 0.f, 20.f, "%.1f s");
+        ImGui::SliderFloat("Get up by yourself after", &downed.selfReviveSeconds,
+                           0.f, 120.f, "%.0f s");
+
+        if (downed.selfReviveSeconds <= 0.f)
+        {
+            ImGui::TextColored(ImVec4(1.f, 0.8f, 0.35f, 1.f),
+                "At zero you stay down until a teammate reaches a checkpoint or");
+            ImGui::TextColored(ImVec4(1.f, 0.8f, 0.35f, 1.f),
+                "the level changes. Alone, that never happens.");
+        }
 
         ImGui::TextDisabled("Every hit costs the same: the real figure lives behind");
         ImGui::TextDisabled("SHitInfo::GetBaseDamage, which has no known address yet.");
@@ -874,6 +922,12 @@ void CoopMod::RenderDiagnosticsTab()
     ImGui::Text("Health %.0f / %.0f, %u hits taken, downed %u times",
                 downed.HitPoints(), downed.Settings().maxHitPoints,
                 downed.HitsTaken(), downed.TimesDowned());
+
+    if (downed.IsDowned())
+    {
+        ImGui::Text("Down for %.0fs, self-revive in %.0fs",
+                    downed.DownedSeconds(), downed.SecondsUntilSelfRevive());
+    }
 
     ImGui::SeparatorText("Network");
     ImGui::Text("Local peer id: %u", status.localPeerId);

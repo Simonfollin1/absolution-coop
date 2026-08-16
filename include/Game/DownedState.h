@@ -55,6 +55,15 @@ namespace Coop::Game
         // Player says 0xD4F5E0, Actors says 0xD4D91C. Neither is confirmed,
         // and a wrong one is a write into whatever else lives there.
         bool alsoUseEngineImmunity = true;
+
+        // Getting up again on your own, after this long, when nothing else has
+        // brought you back.
+        //
+        // Without it being down is a softlock. The other two ways back in are
+        // a scene change and somebody else reaching a checkpoint, and neither
+        // exists when you are playing alone or when the whole session is down
+        // at once. Set to zero to rely on those only.
+        float selfReviveSeconds = 20.f;
     };
 
     class DownedState
@@ -93,6 +102,11 @@ namespace Coop::Game
         uint32_t    HitsTaken() const { return m_hitsTaken; }
         uint32_t    TimesDowned() const { return m_timesDowned; }
 
+        // How long the player has been down, and how long until they get up
+        // by themselves. Zero when not down, or when self-revive is off.
+        float DownedSeconds() const { return m_downedSeconds; }
+        float SecondsUntilSelfRevive() const;
+
         const std::string& Diagnostic() const { return m_diagnostic; }
 
         // Called from the replacement vtable entry. Public because the thunk
@@ -119,6 +133,7 @@ namespace Coop::Game
         float       m_sinceLastHit = 0.f;
         uint32_t    m_hitsTaken    = 0;
         uint32_t    m_timesDowned  = 0;
+        float       m_downedSeconds = 0.f;
 
         bool        m_armed          = false;
         void**      m_patchedVtable  = nullptr;
