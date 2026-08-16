@@ -87,7 +87,11 @@ namespace Coop::Game
         // to read as a death, and is then hidden and moved out from under the
         // level; getting up puts it back exactly where it was. Nothing to
         // shoot at, and no engine state changed to achieve it.
-        bool  hideBodyWhenDown  = true;
+        // Off by default now. Blinding the AI outright is the better answer and
+        // leaves the body lying where it fell, which is what a death should
+        // look like. This stays as the fallback for anyone whose guards keep
+        // shooting anyway.
+        bool  hideBodyWhenDown  = false;
         float hideAfterSeconds  = 2.5f;
 
         // How long after getting up hits are ignored.

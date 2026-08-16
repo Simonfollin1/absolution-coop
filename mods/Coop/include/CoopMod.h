@@ -19,6 +19,7 @@
 #include "Game/ConfigVars.h"
 #include "Game/Instinct.h"
 #include "Game/EngineHealth.h"
+#include "Game/Perception.h"
 
 #include "UI/LoadedMarker.h"
 #include "Diag/FrameCost.h"
@@ -131,6 +132,12 @@ private:
     Coop::Game::ConfigVars  m_configVars;
     Coop::Game::Instinct     m_instinct;
     Coop::Game::EngineHealth m_engineHealth;
+    Coop::Game::Perception   m_perception;
+
+    // Blinding and deafening the AI while somebody is down, which is the real
+    // answer to being shot at on the floor. The body-hiding below was the
+    // workaround for not having found these switches yet.
+    bool m_suppressPerceptionWhenDown = true;
 
     // The same two every mod in this set carries: the line on the main menu
     // that says what is installed, and a per-frame cost the log can answer

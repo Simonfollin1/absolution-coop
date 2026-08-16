@@ -274,6 +274,11 @@ CoopMod::~CoopMod()
     // is a crash with no stack to explain it.
     m_session.Leave();
     m_spectator.Leave();
+
+    // Before anything else: leaving the guards blind and deaf after the mod has
+    // gone would be a bug with no possible explanation from inside the game.
+    m_perception.Restore();
+
     Game::TheDownedState().Disarm();
 
     const ZMemberDelegate<CoopMod, void(const SGameUpdateEvent&)>
@@ -975,6 +980,10 @@ void CoopMod::AutoDumpWhenReady(float deltaSeconds)
     Diag::Log("  engine health   %s", m_engineHealth.Note().c_str());
     Diag::Log("  health ring     %s",
               m_driveHudHealth ? "driven from the mod's pool" : "left alone");
+    Diag::Log("  perception      %s",
+              m_suppressPerceptionWhenDown
+                  ? "will be switched off while down"
+                  : "left alone while down - they will keep shooting you");
     Diag::Log("  instinct        %s",
               m_instinct.Readable() ? "focus controller readable"
                                     : "focus controller UNREADABLE");
@@ -1152,6 +1161,15 @@ void CoopMod::UpdateSceneTransition()
         // Everyone in the old scene is about to stop being listed. That is not
         // a massacre, it is a level change.
         m_probe.ForgetActors();
+
+        // A new scene reloads the configuration, so the values we saved belong
+        // to a game state that no longer exists. Let go of them rather than
+        // writing them back over whatever the new level set up.
+        if (m_perception.Suppressed())
+        {
+            m_perception.Restore();
+            AddLogLine("Level changed while down - perception left as the new scene set it");
+        }
     }
 
     if ((playerReplaced || areaChanged) && hitman)
@@ -1174,6 +1192,32 @@ void CoopMod::UpdateSceneTransition()
 void CoopMod::UpdateDownedFlow(float deltaSeconds)
 {
     Game::DownedState& downed = Game::TheDownedState();
+
+    // The guards' senses, off while somebody is on the floor.
+    //
+    // This is what the body-hiding was standing in for. The engine keeps its
+    // detection cone, its hearing and its target tracker as configuration
+    // variables, all of which turned up in the enumeration the mod already
+    // does - so the AI can simply be made unable to notice anything, rather
+    // than given nothing to notice.
+    if (m_suppressPerceptionWhenDown)
+    {
+        if (downed.IsDowned() && !m_perception.Suppressed())
+        {
+            m_perception.Suppress(m_configVars);
+            AddLogLine(m_perception.Note());
+        }
+        else if (!downed.IsDowned() && m_perception.Suppressed())
+        {
+            m_perception.Restore();
+            AddLogLine(m_perception.Note());
+        }
+    }
+    else if (m_perception.Suppressed())
+    {
+        m_perception.Restore();
+        AddLogLine(m_perception.Note());
+    }
 
     downed.Update(deltaSeconds, (m_probe.LocalState().flags & Net::SF_Dead) != 0);
 
@@ -1860,7 +1904,36 @@ void CoopMod::RenderRulesTab()
 
         ImGui::Checkbox("Go limp when you go down", &downed.ragdollWhenDown);
 
-        ImGui::Checkbox("And then get out of the fight", &downed.hideBodyWhenDown);
+        ImGui::Checkbox("Blind and deafen the guards while you are down",
+                        &m_suppressPerceptionWhenDown);
+
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip(
+                "The engine is never told you went down, so the AI has a live\n"
+                "hostile lying on the floor and keeps shooting it.\n\n"
+                "This switches off what it perceives with: the detection cone\n"
+                "goes to zero degrees, hearing is disabled at its own flag, and\n"
+                "the target tracker is left no range and no field of view. All\n"
+                "of them are the engine's own configuration variables, and every\n"
+                "one is put back exactly as it was when you get up.\n\n"
+                "It applies to every NPC, not only the ones looking at you - for\n"
+                "the seconds somebody is on the floor, that is the trade.");
+        }
+
+        ImGui::TextDisabled("%s", m_perception.Note().c_str());
+
+        ImGui::Checkbox("Also hide the body under the level",
+                        &downed.hideBodyWhenDown);
+
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip(
+                "The older answer, kept as a fallback: rather than stopping the\n"
+                "guards from noticing, it takes away the thing they are noticing.\n"
+                "Leave it off unless they keep shooting you anyway - a body that\n"
+                "stays where it fell is what a death should look like.");
+        }
 
         if (ImGui::IsItemHovered())
         {
