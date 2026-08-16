@@ -2,6 +2,11 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
+// SIO_UDP_CONNRESET lives here rather than in winsock2.h or ws2tcpip.h, which
+// is not obvious and is exactly the kind of thing that only shows up once
+// somebody tries to build it.
+#include <mstcpip.h>
+
 #include <cstdio>
 #include <cstdlib>
 
