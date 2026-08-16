@@ -76,6 +76,20 @@ namespace Coop::Game
         // on a real death, minus the death.
         bool ragdollWhenDown = true;
 
+        // Getting out of the fight once you are in it.
+        //
+        // The engine is never told you went down - that is the whole mechanism
+        // - so to the AI there is a live hostile lying on the floor, and they
+        // keep shooting it. A session's log showed forty-odd hits landing on a
+        // player who was already spectating.
+        //
+        // So the body leaves. It falls where it stood, lies there long enough
+        // to read as a death, and is then hidden and moved out from under the
+        // level; getting up puts it back exactly where it was. Nothing to
+        // shoot at, and no engine state changed to achieve it.
+        bool  hideBodyWhenDown  = true;
+        float hideAfterSeconds  = 2.5f;
+
         // How long after getting up hits are ignored.
         //
         // Standing up inside the firefight that put you down and being dropped
@@ -129,6 +143,16 @@ namespace Coop::Game
         // in it, which makes it safe to drive a HUD line straight off.
         float SecondsOfGraceLeft() const;
 
+        // Where the body went down. The spectator camera wants this rather
+        // than the player's live position, which is under the level once the
+        // body has been taken out of the fight.
+        bool  HaveDownPosition() const { return m_haveDownPos; }
+        float DownX() const { return m_downX; }
+        float DownY() const { return m_downY; }
+        float DownZ() const { return m_downZ; }
+
+        bool BodyHidden() const { return m_bodyHidden; }
+
         const std::string& Diagnostic() const { return m_diagnostic; }
 
         // What the engine-level backstop actually managed to do, which is not
@@ -174,6 +198,9 @@ namespace Coop::Game
         // thread and outside the engine's own damage call.
         void ServiceRagdoll();
 
+        void HideBody();
+        void RestoreBody();
+
         // Reads a damage figure out of SHitInfo. The struct's layout is
         // published for the 2012 development build and has not been confirmed
         // against retail, so this is allowed to fail and say so rather than
@@ -208,6 +235,15 @@ namespace Coop::Game
         bool m_ragdollPending = false;
         bool m_ragdollActive  = false;
         bool m_standUpPending = false;
+
+        // Where the body went down, so it can be put back exactly there, and
+        // so the spectator camera watches the spot rather than following the
+        // body out of the world.
+        bool  m_bodyHidden  = false;
+        bool  m_haveDownPos = false;
+        float m_downX = 0.f;
+        float m_downY = 0.f;
+        float m_downZ = 0.f;
 
         // Written from the UI thread, read and decremented on the game thread.
         // A hit landing on the frame it is armed or disarmed is not a race

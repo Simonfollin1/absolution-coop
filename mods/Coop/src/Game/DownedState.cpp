@@ -6,6 +6,8 @@
 #include <format>
 
 #include <Glacier/Player/ZHitman5.h>
+#include <Glacier/Render/ZSpatialEntity.h>
+#include <Glacier/Math/float4.h>
 #include <Global.h>
 
 #include "Game/DownedState.h"
@@ -72,6 +74,11 @@ namespace Coop::Game
         // Not to be confused with 0xD4D91C, which the Actors mod writes: that
         // one is god mode for NPCs, a different flag for a different job.
         constexpr uintptr_t kPlayerGodModeOffset = 0xD4F5E0;
+
+        // How far under the level a downed body goes. Far enough that nothing
+        // in the room can see it, near enough that it is obviously the same
+        // level if anything ever goes wrong and it is left there.
+        constexpr float kHiddenDepth = 500.f;
 
         // POD only and no destructors in scope, because __try cannot coexist
         // with anything that needs unwinding.
@@ -260,10 +267,13 @@ namespace Coop::Game
         // have held something unrecognisable at the moment we last looked.
         m_immunityRefused = false;
 
-        // A different character entirely, and one that is not on the floor.
+        // A different character entirely, and one that is neither on the floor
+        // nor under it. Nothing to restore - the object we hid is gone.
         m_ragdollPending = false;
         m_standUpPending = false;
         m_ragdollActive  = false;
+        m_bodyHidden     = false;
+        m_haveDownPos    = false;
 
         ApplyEngineImmunity(true);
 
@@ -359,9 +369,11 @@ namespace Coop::Game
 
     void DownedState::Disarm()
     {
-        // Stand the player up before letting go of them. Unloading the mod
-        // while 47 is face down on the floor would leave the game with a
-        // problem it has no way to explain.
+        // Put the body back in the world before letting go of it. Unloading
+        // while 47 is five hundred metres under the level, or face down on the
+        // floor, leaves the game a problem it has no way to explain.
+        RestoreBody();
+
         if (m_ragdollActive)
         {
             m_ragdollPending = false;
@@ -581,6 +593,78 @@ namespace Coop::Game
         m_ragdollPending = m_settings.ragdollWhenDown;
     }
 
+    void DownedState::HideBody()
+    {
+        if (m_bodyHidden || !m_armedFor)
+        {
+            return;
+        }
+
+        auto* character = static_cast<ZHM5BaseCharacter*>(m_armedFor);
+
+        ZSpatialEntity* spatial = character->GetSpatialEntityPtr();
+
+        if (!spatial)
+        {
+            m_diagnostic += "; could not reach the body to hide it";
+            return;
+        }
+
+        // Remember where, to the centimetre, because getting up has to put the
+        // player back exactly there - a revive that moves you is worse than
+        // being shot at.
+        const float4 position = spatial->GetWorldPosition();
+
+        m_downX = position.x;
+        m_downY = position.y;
+        m_downZ = position.z;
+
+        m_haveDownPos = true;
+
+        // Hidden first, then moved. The other order gives one frame of a body
+        // streaking across the level.
+        character->ShowCharacter(false);
+
+        float4 away = position;
+        away.z -= kHiddenDepth;
+
+        spatial->SetWorldPosition(away);
+
+        m_bodyHidden = true;
+    }
+
+    void DownedState::RestoreBody()
+    {
+        if (!m_bodyHidden)
+        {
+            return;
+        }
+
+        m_bodyHidden = false;
+
+        if (!m_armedFor)
+        {
+            return;
+        }
+
+        auto* character = static_cast<ZHM5BaseCharacter*>(m_armedFor);
+
+        ZSpatialEntity* spatial = character->GetSpatialEntityPtr();
+
+        if (spatial && m_haveDownPos)
+        {
+            float4 back = spatial->GetWorldPosition();
+
+            back.x = m_downX;
+            back.y = m_downY;
+            back.z = m_downZ;
+
+            spatial->SetWorldPosition(back);
+        }
+
+        character->ShowCharacter(true);
+    }
+
     void DownedState::ServiceRagdoll()
     {
         if (!m_armedFor)
@@ -656,6 +740,15 @@ namespace Coop::Game
         {
             m_downedSeconds += deltaSeconds;
 
+            // Out of the fight, once the fall has had time to read as one.
+            // Until this happens the AI has a live hostile lying in front of it
+            // and treats it exactly that way.
+            if (m_settings.hideBodyWhenDown &&
+                m_downedSeconds >= m_settings.hideAfterSeconds)
+            {
+                HideBody();
+            }
+
             // The way back that does not depend on anybody else. Without it,
             // playing alone or going down as a group is a state with no exit.
             if (m_settings.selfReviveSeconds > 0.f &&
@@ -706,6 +799,10 @@ namespace Coop::Game
         m_sinceLastHit      = 0.f;
         m_downedSeconds     = 0.f;
         m_recoveringSeconds = 0.f;
+
+        // Back where you fell, before anything else - the camera and the
+        // animation both want a body that is in the world.
+        RestoreBody();
 
         // Cancel a collapse that has not happened yet, and undo one that has.
         m_ragdollPending = false;

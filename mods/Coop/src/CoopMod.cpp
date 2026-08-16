@@ -714,11 +714,12 @@ void CoopMod::TraceWorldChanges()
 
     if (phase != m_tracedPhase)
     {
-        Diag::Log("player is now %s (health %.0f, %u hits, downed %u times)",
+        Diag::Log("player is now %s (health %.0f, %u hits, downed %u times, body %s)",
                   phase == 1 ? "DOWN" : phase == 2 ? "up again, briefly immune" : "up",
                   Game::TheDownedState().HitPoints(),
                   Game::TheDownedState().HitsTaken(),
-                  Game::TheDownedState().TimesDowned());
+                  Game::TheDownedState().TimesDowned(),
+                  Game::TheDownedState().BodyHidden() ? "hidden" : "in the world");
 
         m_tracedPhase = phase;
     }
@@ -1215,11 +1216,14 @@ void CoopMod::UpdateDownedFlow(float deltaSeconds)
 
         m_spectator.Enter();
 
-        // Watch a teammate in this level if there is one, otherwise our own
-        // body, which is at least somewhere the player recognises.
-        SVector3 target(m_probe.PlayerPosition().x,
-                        m_probe.PlayerPosition().y,
-                        m_probe.PlayerPosition().z);
+        // Watch a teammate in this level if there is one, otherwise the spot
+        // where we fell - not the player's live position, which is under the
+        // level once the body has been taken out of the fight.
+        SVector3 target = downed.HaveDownPosition()
+            ? SVector3(downed.DownX(), downed.DownY(), downed.DownZ())
+            : SVector3(m_probe.PlayerPosition().x,
+                       m_probe.PlayerPosition().y,
+                       m_probe.PlayerPosition().z);
 
         for (const Game::AvatarView& view : m_avatars.Views())
         {
@@ -1855,6 +1859,26 @@ void CoopMod::RenderRulesTab()
                            0.f, 15.f, "%.1f s");
 
         ImGui::Checkbox("Go limp when you go down", &downed.ragdollWhenDown);
+
+        ImGui::Checkbox("And then get out of the fight", &downed.hideBodyWhenDown);
+
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip(
+                "The engine is never told you went down, so the AI has a live\n"
+                "hostile lying on the floor and keeps shooting it - forty-odd\n"
+                "hits landed on a spectating player in one session.\n\n"
+                "This hides the body and moves it out from under the level once\n"
+                "the fall has had time to read, and puts it back exactly where\n"
+                "it was when you get up. Nothing to shoot at, and no engine\n"
+                "state changed to manage it.");
+        }
+
+        if (downed.hideBodyWhenDown)
+        {
+            ImGui::SliderFloat("Lie there for", &downed.hideAfterSeconds,
+                               0.f, 8.f, "%.1f s");
+        }
 
         if (ImGui::IsItemHovered())
         {
