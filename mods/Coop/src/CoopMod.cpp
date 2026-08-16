@@ -505,6 +505,11 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
     m_instinct.Update(deltaSeconds);
     m_avatars.SetInstinct(m_instinct.Active());
 
+    // The engine's own health, read from where the HUD reads it. Nothing acts
+    // on this yet - it is being watched for a session so the offsets can be
+    // trusted before the whole damage model is rebuilt on top of them.
+    m_engineHealth.Update();
+
     TraceWorldChanges();
     TraceKeys();
     AutoDumpWhenReady(deltaSeconds);
@@ -657,6 +662,44 @@ void CoopMod::TraceWorldChanges()
                   m_tracedInstinct ? "held" : "released",
                   m_instinct.Amount(),
                   m_instinct.Readable() ? "readable" : "UNREADABLE");
+    }
+
+    // The engine's health, every time it moves. This is the number that decides
+    // whether the mod can throw away its shadow pool: if it drops for a fall,
+    // for drowning, and for a close-combat sequence - none of which reach the
+    // interception - then mirroring it replaces the whole arrangement.
+    if (m_engineHealth.Readable() && m_engineHealth.Current() != m_tracedEngineHealth)
+    {
+        m_tracedEngineHealth = m_engineHealth.Current();
+
+        Diag::Log("engine health %.2f (max %.2f, dropped %.2f) | mod pool %.0f",
+                  m_engineHealth.Current(), m_engineHealth.Max(),
+                  m_engineHealth.LastDrop(), Game::TheDownedState().HitPoints());
+
+        // Once, the object the maximum lives in. The writable current health
+        // should be a float near it, and this is how we find out which.
+        if (!m_dumpedHealthObject && m_engineHealth.HealthObject() != 0)
+        {
+            m_dumpedHealthObject = true;
+
+            constexpr size_t kBytes = 0x240;
+
+            std::vector<uint8_t> bytes(kBytes, 0);
+
+            if (m_engineHealth.SnapshotHealthObject(bytes.data(), kBytes) == kBytes)
+            {
+                Diag::Log("health object at %08X, %zu bytes - the maximum is at +0x21C,"
+                          " so the writable current value is a float near it:",
+                          static_cast<unsigned>(m_engineHealth.HealthObject()), kBytes);
+
+                LogBytes("  ", bytes.data(), kBytes);
+            }
+            else
+            {
+                Diag::Log("health object at %08X could not be read",
+                          static_cast<unsigned>(m_engineHealth.HealthObject()));
+            }
+        }
     }
 
     const uint8_t phase = static_cast<uint8_t>(Game::TheDownedState().Phase());
@@ -2168,6 +2211,23 @@ void CoopMod::RenderDiagnosticsTab()
                 m_probe.DeathsByFlag(), m_probe.DeathsByVanish());
     ImGui::TextDisabled("Whether a killed actor stays listed with a flag set or");
     ImGui::TextDisabled("simply leaves is not documented, so both are counted.");
+
+    ImGui::SeparatorText("The engine's own health");
+
+    if (m_engineHealth.Readable())
+    {
+        ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.f), "%s",
+                           m_engineHealth.Note().c_str());
+    }
+    else
+    {
+        ImGui::TextColored(ImVec4(1.f, 0.80f, 0.35f, 1.f), "%s",
+                           m_engineHealth.Note().c_str());
+    }
+
+    ImGui::TextDisabled("Read from where the health ring reads it. Nothing acts on");
+    ImGui::TextDisabled("it yet - it is being watched before the damage model is");
+    ImGui::TextDisabled("rebuilt on top of it.");
 
     ImGui::SeparatorText("Damage interception");
 

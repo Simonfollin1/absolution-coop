@@ -627,6 +627,68 @@ real health, so the offset this project has been working around is inside it.
 
 ---
 
+## 2f. The player's health, at last
+
+`FUN_004fc060` in full is 236 bytes and two of them matter:
+
+```c
+if (*(char *)(hud + 0x79) != '\0') {
+    health = *(float *)(hud + 0x640);            // live
+    if (*(float *)(hud + 0x644) != health) {     // last drawn
+        *(float *)(hud + 0x644) = health;
+        ...
+        percent = (health * 100.0f)
+                / *(float *)(*(int *)(g_level + 0xa2c) + 0x21c);
+```
+
+`hud` is `ZHUDManager`. The SDK resolves it at `base + 0xD61C00`, and
+LiveSplit's "in menu" flag is `base + 0xD61C7B` — the same object at `+0x7B`,
+right beside the `+0x79` byte this function gates on. So:
+
+```
+ZHUDManager + 0x640                       float   health now
+ZHUDManager + 0x644                       float   health as last drawn
+[[base + 0xE21358] + 0xA2C] + 0x21C       float   maximum health
+```
+
+The SDK already hands out `HUDManager`, so the current value needs no address
+of its own, no hook and no scan. `0xE21358` is `ZLevelManager + 0x48`.
+
+**What it changes.** The mod keeps a shadow health pool because the engine's own
+was unreachable, and that shadow pool is the source of every remaining problem:
+close combat, falls, drowning and scripted kills never reach `YouGotHit`, so
+none of them cost anything; the ring on the HUD reads full while the pool
+empties; and the flat cost per hit is a guess because the real figure is behind
+an accessor. Mirroring the engine's health instead — let it take the damage,
+read what it did, and put the health back before it reaches zero — makes all
+four go away at once, and lets the game keep drawing its own HUD.
+
+That is the next change, and it is not made on the strength of a decompilation
+alone: the mod reads and logs both values now, and one session showing them
+move for a fall and for a close-combat sequence is what earns the rewrite.
+
+**`FUN_00806180` confirms the hit layout from the other side.** It is what fills
+the struct, and it writes exactly what was measured:
+
+```c
+param_2[3]    = this + 8;                       // +0x0C  "projectile"
+param_2[2]    = *(byte *)(source + 0x28);       // +0x08  bone index
+param_2[4..7] = source[0..3];                   // +0x10  position
+param_2[8..b] = source[4..7];                   // +0x20  normal
+param_2[0x16] = (*(char *)(this + 0x174) != 0) * 4 + 1;   // +0x58  1 or 5
+```
+
+A capture from the game read `00000005` at `+0x58`.
+
+**One dead end, recorded so nobody follows it twice.** `FUN_00d12da0`, the top
+hit of a search for functions touching several "focus" strings, is Scaleform's
+UI focus system — `captureFocus`, `moveFocus`, `modalClip`, `setControllerFocusGroup`.
+Nothing to do with Instinct. Instinct's own names are `InstinctModeBurnRate`,
+`InstinctRegenRate` and `InstinctRegenCap`, which came out of the difficulty
+table instead.
+
+---
+
 ## 2c. Input, and why a hotkey can look dead
 
 Three separate things make a bound key do nothing, and the first two are not

@@ -18,6 +18,7 @@
 #include "Game/Spectator.h"
 #include "Game/ConfigVars.h"
 #include "Game/Instinct.h"
+#include "Game/EngineHealth.h"
 
 #include "UI/LoadedMarker.h"
 #include "Diag/FrameCost.h"
@@ -117,7 +118,8 @@ private:
     Coop::Game::PeerAvatars m_avatars;
     Coop::Game::Spectator   m_spectator;
     Coop::Game::ConfigVars  m_configVars;
-    Coop::Game::Instinct    m_instinct;
+    Coop::Game::Instinct     m_instinct;
+    Coop::Game::EngineHealth m_engineHealth;
 
     // The same two every mod in this set carries: the line on the main menu
     // that says what is installed, and a per-frame cost the log can answer
@@ -191,6 +193,8 @@ private:
     uint32_t m_tracedDeaths    = 0;
     uint8_t  m_tracedPhase     = 0xFF;
     bool     m_tracedInstinct  = false;
+    float    m_tracedEngineHealth = -2.f;
+    bool     m_dumpedHealthObject = false;
 
     // --- Spectator mouse look ---------------------------------------------
 
