@@ -566,6 +566,67 @@ say where that damage is decided, and it is somewhere else entirely.
 
 ---
 
+## 2e. The damage function, read at last
+
+`FUN_00619800` at `0x00619800` owns the call site every hit came from. Reading
+it settles several things at once.
+
+**The constant tail of `SHitInfo` is the struct's own defaults**, written as
+immediates right there:
+
+```
+local_90 = 0x44160000;   // +0x30   600.0
+local_8c = 0x43480000;   // +0x34   200.0
+local_88 = 6;            // +0x38
+local_84 = 0x3f000000;   // +0x3C   0.5
+local_80 = 0xc2c80000;   // +0x40  -100.0
+local_7c = 0x3fd9999a;   // +0x44   1.7
+local_78 = 6;            // +0x48
+local_74 = local_70 = local_6c = 0x3f800000;   // +0x4C..+0x54  1.0
+```
+
+Byte for byte what a session of captures showed and never saw move. So the tail
+is part of the struct, not the caller's stack frame, and it carries no per-hit
+information at all.
+
+**Slot 5 confirmed a third time, in the disassembly:**
+
+```c
+(**(code **)(*local_20 + 0x14))(&local_c0);
+```
+
+`0x14` is `5 * sizeof(void*)`, and the argument is the hit struct. That agrees
+with the SDK headers and with the runtime vtable dump.
+
+**The damage is not written here.** `+0x00` through `+0x2C` are zeroed and then
+`FUN_00806180(&local_c0, param_3)` fills them from the source object. Whatever
+`GetBaseDamage` reads, it reads through the projectile that call installs.
+
+**The difficulty parameters are indexed.** `FUN_008a8260` registers all of them
+through `FUN_008e97d0(index, difficulty, length, name, table, 1.0f)`:
+
+```
+ 5  HitmanDamageReceivedMultiplier    0x13  CCChainFailDamage
+ 6  NPCDamageReceivedMultiplier       0x14  CCCounterFailDamage
+ 8  HealthInterval0                   0x16  CCSanchezChainFailDamage
+ 9  HealthInterval1                   0x17  CCSanchezCounterFailDamage
+ 0xB HealthRegenPerSecond             0x1E  InstinctModeBurnRate
+ 0xC CriticalHealthThreshold          0x1F  InstinctRegenRate
+                                      0x20  InstinctRegenCap
+```
+
+The table those go into is a global holding the live values, and index 5 is the
+received-damage multiplier this project went looking for in the console system
+and did not find. Reaching the table is a better engine-level lever than the
+god-mode flag, and it is one `FUN_008e97d0` away.
+
+**The health ring has an address.** `FUN_004fc060`, 236 bytes, is the only
+function referencing `_root.g_mcHealthBar`, and `FUN_00501fc0` calls it in a
+batch with every other HUD updater. To draw the ring it must read the player's
+real health, so the offset this project has been working around is inside it.
+
+---
+
 ## 2c. Input, and why a hotkey can look dead
 
 Three separate things make a bound key do nothing, and the first two are not
