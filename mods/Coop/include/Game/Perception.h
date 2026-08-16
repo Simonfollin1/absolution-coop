@@ -33,7 +33,13 @@ namespace Coop::Game
     public:
         // Remembers what each switch held, then turns it off. Safe to call
         // repeatedly; only the first call in a run records the originals.
-        void Suppress(const ConfigVars& known);
+        //
+        // Takes the registry by reference rather than by const reference so it
+        // can re-read the values afterwards and put what actually happened in
+        // the log. The dispatcher returns nothing - a write that silently did
+        // not land looks exactly like one that did, and this project has
+        // already spent a session believing one of those.
+        void Suppress(ConfigVars& known);
 
         // Puts back precisely what was there. Safe when nothing was suppressed.
         void Restore();

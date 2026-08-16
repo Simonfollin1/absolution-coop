@@ -87,12 +87,19 @@ namespace Coop::Game
         // to read as a death, and is then hidden and moved out from under the
         // level; getting up puts it back exactly where it was. Nothing to
         // shoot at, and no engine state changed to achieve it.
-        // Off by default now. Blinding the AI outright is the better answer and
-        // leaves the body lying where it fell, which is what a death should
-        // look like. This stays as the fallback for anyone whose guards keep
-        // shooting anyway.
-        bool  hideBodyWhenDown  = false;
-        float hideAfterSeconds  = 2.5f;
+        // Back on, and quick.
+        //
+        // Blinding the AI was tried and did not stop them: they carried on
+        // shooting a player who was already down. Perception decides whether
+        // they *find* a target, not whether they let one go - once a guard is
+        // in combat it has you and keeps you, and no amount of switching off
+        // its eyes changes that.
+        //
+        // Taking the body away does work, because there is then nothing to
+        // shoot at. It is a blunter answer than making them believe you are
+        // dead, and it is the one that holds up.
+        bool  hideBodyWhenDown  = true;
+        float hideAfterSeconds  = 1.2f;
 
         // How long after getting up hits are ignored.
         //

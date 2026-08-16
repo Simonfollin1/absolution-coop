@@ -1,7 +1,9 @@
 #include <format>
+#include <string>
 
 #include "Game/Perception.h"
 #include "Game/ConfigVars.h"
+#include "Diag/Diag.h"
 
 namespace Coop::Game
 {
@@ -31,7 +33,7 @@ namespace Coop::Game
         };
     }
 
-    void Perception::Suppress(const ConfigVars& known)
+    void Perception::Suppress(ConfigVars& known)
     {
         if (m_suppressed)
         {
@@ -75,10 +77,42 @@ namespace Coop::Game
             m_saved.push_back(std::move(saved));
         }
 
-        m_note = guessed == 0
-            ? std::format("perception off: {} switches, originals recorded", applied)
-            : std::format("perception off: {} switches, {} restored from defaults "
-                          "because the variables had not been read yet", applied, guessed);
+        // What actually happened, read back from the engine rather than assumed
+        // from the dispatcher returning without faulting. RefreshValues re-reads
+        // what the walk already found, so it costs a pass over a list rather
+        // than another walk of the chain.
+        int landed = 0;
+
+        if (known.Walked())
+        {
+            known.RefreshValues();
+
+            for (const Saved& saved : m_saved)
+            {
+                const ConfigVar* now = known.Get(saved.name);
+
+                const bool took = now && now->ValueText() == saved.suppressed;
+
+                if (took)
+                {
+                    ++landed;
+                }
+
+                Diag::Log("  perception %-32s %s -> %s   %s",
+                          saved.name.c_str(), saved.original.c_str(),
+                          saved.suppressed.c_str(),
+                          !now  ? "NOT IN THE REGISTRY"
+                        : took  ? "took"
+                                : ("did NOT take, still " + now->ValueText()).c_str());
+            }
+        }
+
+        m_note = std::format(
+            "perception: {} of {} switches dispatched, {} confirmed changed{}",
+            applied, static_cast<int>(m_saved.size()), landed,
+            guessed > 0 ? " (some originals came from defaults)" : "");
+
+        Diag::Log("%s", m_note.c_str());
     }
 
     void Perception::Restore()

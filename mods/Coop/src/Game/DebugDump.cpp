@@ -241,7 +241,14 @@ namespace Coop::Game
             report.vtableRva     = ToRva(reinterpret_cast<uintptr_t>(vtable));
             report.decoratedName = NameFromVtable(vtable);
 
-            for (size_t i = 0; i < 64; ++i)
+            // Was 64, which stopped short. ZEntityImpl contributes 24 entries
+            // and ZHM5BaseCharacter declares more than fifty of its own, so the
+            // primary table runs well past that - and the entry worth having is
+            // IsDead, which the SDK's declaration order puts somewhere around
+            // 75. Patching that to return true while a player is down is the
+            // difference between the guards believing you are dead and the mod
+            // hiding your body from them.
+            for (size_t i = 0; i < 200; ++i)
             {
                 void* entry = nullptr;
 
