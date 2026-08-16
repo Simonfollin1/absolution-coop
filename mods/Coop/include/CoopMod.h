@@ -151,6 +151,13 @@ private:
     std::string m_sceneError;
     int         m_peerSceneCheckpoint = -1;
 
+    // A load asked for from the panel and carried out on the game thread. The
+    // button runs inside Present, and rebuilding the world from there with a
+    // frame half drawn is what crashed the first person who pressed it.
+    std::string m_sceneLoadRequest;
+    int         m_sceneLoadCheckpoint = -1;
+    bool        m_sceneLoadPending    = false;
+
     char m_hostAddress[64] = "127.0.0.1:47474";
     char m_playerName[32]  = "Agent";
     char m_password[32]    = "";

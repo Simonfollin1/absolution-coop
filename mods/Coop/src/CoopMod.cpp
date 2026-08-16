@@ -548,6 +548,24 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
         }
     }
 
+    // A scene load somebody asked for from the panel. Done here, on the game
+    // thread, with no frame in progress - never from the button itself.
+    if (m_sceneLoadPending)
+    {
+        m_sceneLoadPending = false;
+
+        std::string error;
+
+        if (!Game::SceneSync::LoadScene(m_sceneLoadRequest, m_sceneLoadCheckpoint, error))
+        {
+            m_sceneError = error;
+            AddLogLine(std::format("Could not go there: {}", error));
+        }
+
+        // Nothing after this can assume the world still exists.
+        return;
+    }
+
     TraceWorldChanges();
     TraceKeys();
     AutoDumpWhenReady(deltaSeconds);
@@ -1718,21 +1736,24 @@ void CoopMod::RenderSessionTab()
 
         ImGui::TextDisabled("%s", m_peerScene.c_str());
 
+        ImGui::BeginDisabled(m_sceneLoadPending);
+
         if (ImGui::Button("Go there", ImVec2(180.f, 0.f)))
         {
-            std::string error;
+            // Asked for here, done on the game thread. This button runs inside
+            // Present, and a scene load tears down and rebuilds the world -
+            // doing that mid-frame with the renderer's state live is what
+            // crashed the first person who pressed it.
+            m_sceneLoadRequest    = m_peerScene;
+            m_sceneLoadCheckpoint = m_peerSceneCheckpoint;
+            m_sceneLoadPending    = true;
 
-            if (Game::SceneSync::LoadScene(m_peerScene, m_peerSceneCheckpoint, error))
-            {
-                m_sceneError.clear();
-                AddLogLine(std::format("Loading {}", m_peerScene));
-            }
-            else
-            {
-                m_sceneError = error;
-                AddLogLine(std::format("Could not go there: {}", error));
-            }
+            m_sceneError.clear();
+
+            AddLogLine(std::format("Going to {}", m_peerScene));
         }
+
+        ImGui::EndDisabled();
 
         ImGui::SameLine();
         ImGui::TextDisabled("this restarts you into their mission");

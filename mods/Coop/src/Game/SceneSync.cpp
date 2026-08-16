@@ -132,19 +132,34 @@ namespace Coop::Game
         // asking for the scene is what the game does to itself on every
         // transition; this is the same path, with the same values, aimed at the
         // level somebody else is already in.
-        //
-        // Deliberately not guarded by __try: ZString assignment allocates, and
-        // a structured exception around something that unwinds will not
-        // compile. If the level manager pointer were bad we would already have
-        // faulted reading the scene name above.
         SSceneParameters& parameters = LevelManager->GetSceneParameters();
 
-        parameters.sSceneResource   = ZString(sceneResource.c_str());
+        // ZString does not copy. Its const char* constructor sets the top bit
+        // of the length - the flag for "not allocated" - and keeps the pointer,
+        // and assigning from an unallocated one copies that pointer straight
+        // through. The first version of this handed the engine a pointer into
+        // a std::string this mod owns and then overwrote that string every time
+        // a peer announced a level, so the loader read freed memory. It killed
+        // the game on the first press.
+        //
+        // CopyFrom allocates through the game's own allocator, which is what
+        // makes the engine the owner of what it is holding.
+        const ZString view(sceneResource.c_str());
+
+        parameters.sSceneResource   = ZString::CopyFrom(view);
         parameters.nCheckpointIndex = checkpointIndex < 0 ? 0 : checkpointIndex;
         parameters.bRestoring       = false;
         parameters.bUseSaveGame     = false;
 
+        Diag::Log("scene: parameters written, asking for the load");
+
         // An empty streaming state is what a plain transition uses.
+        //
+        // Must be the game thread. This tears the whole scene down and builds
+        // another, and the first version called it from OnDrawUI - inside
+        // Present, mid-frame, with the renderer's state set up and ImGui
+        // halfway through its own draw. CoopMod defers the request to the frame
+        // update for exactly this reason.
         context->CreateScene(ZString(""));
 
         Diag::Log("scene: load requested");
