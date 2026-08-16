@@ -353,6 +353,41 @@ and an inherited vtable keeps its indices.
 or the linker folded it away. It does not matter here, but it is worth knowing
 before going looking for one.
 
+### The damage figure is still not settled
+
+`YouGotHit`'s static call graph is nearly empty: one caller, `FUN_00717b40`,
+and it is 45 bytes, so it forwards rather than computes. That is not a dead end
+so much as the wrong tool. The function is reached virtually through the
+vtable, and a static call graph cannot see an indirect call.
+
+`FUN_00707230` (133 bytes), called from that same forwarder, is a plausible
+candidate for a damage accessor, but plausible is not enough to build a health
+model on. The mod charges a flat amount per hit and says so in its own UI.
+
+If somebody wants to settle it: slot 5 is at byte offset `0x14` in the table,
+so the call sites look like `call dword ptr [reg + 0x14]` against an
+`IBaseCharacter`. Finding those is a search over code rather than over the
+call graph.
+
+### Locomotion: the way in is `FUN_007b0d20`
+
+Found by counting which functions reference the morpheme node-path strings:
+
+| Function | Size | Node-path strings referenced |
+|---|---|---|
+| **`FUN_007b0d20`** | 8340 bytes | 6 |
+| `FUN_006dc350` | 1229 bytes | 2 |
+| `FUN_007d18a0` | 1497 bytes | 2 |
+
+Eight kilobytes referencing six different node paths is the shape of
+`ZHM5LocomotionNetwork::Init`, which builds eighteen states and resolves each
+one's node id from its path. The rest of the class is reachable from there by
+following what operates on the same `this`.
+
+This is the entry point to the animation system, and it was unknown before.
+It is what section 3.3 needs, and so it is what stands between a remote player
+being a marker and being a character that walks.
+
 ### The fingerprint this produced
 
 `AddRef` and `Release` are separate declarations with the same trivial body, so
