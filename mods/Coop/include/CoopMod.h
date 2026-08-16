@@ -74,8 +74,6 @@ private:
     void RenderPlayersTab();
     void RenderRulesTab();
     void RenderDiagnosticsTab();
-    void RenderEngineTab();
-    void RenderResearchTab();
     void RenderHudOverlay();
 
     // Watches for the things worth having a timestamped record of, and writes
@@ -90,9 +88,9 @@ private:
 
     // Writes the full dump by itself, once, shortly after a level is up.
     //
-    // The button on the Research tab does the same thing on demand, but nobody
-    // should have to remember to press it - and nobody should have to
-    // photograph a panel to tell somebody else what it said.
+    // The button in Diagnostics does the same on demand, but nobody should have
+    // to remember to press it, and nobody should have to photograph a panel to
+    // tell somebody else what it said.
     void AutoDumpWhenReady(float deltaSeconds);
 
     // Logs every key going down and coming up, so "the key does nothing" is
@@ -104,23 +102,14 @@ private:
     // that one is the version people use and it has the details right.
     void MouseLook(float deltaSeconds, float& yawDelta, float& pitchDelta);
 
-    // The red that says you are being shot, drawn from the pool this mod owns
-    // rather than from the engine's health - which no longer moves.
-    //
-    // Half the answer. The other half is the health ring around the radar,
-    // which is the engine's and still reads full; see Game/ScaleformProbe.h.
-    // Writes the mod's health into the field the ring is drawn from. Called
-    // from OnDrawUI rather than the frame update: the game rewrites that field
-    // during its own HUD pass, which happens between the two.
+    // Writes the mod's health into the field the health ring is drawn from.
+    // Called from OnDrawUI rather than the frame update: the game rewrites that
+    // field during its own HUD pass, which happens between the two.
     void DriveHudHealth();
 
+    // The red that says you are being shot, drawn from the pool this mod owns
+    // rather than from the engine's health, which no longer moves.
     void RenderHurtOverlay();
-
-    // The screen you look at while you are down: a depleting ring, the seconds
-    // left, and what will get you up. Drawn rather than assembled from assets -
-    // ImGui has no SVG and needs none, and a countdown that is one arc and one
-    // number is better as code than as a file somebody has to ship.
-    void RenderDownedScreen();
 
     void AddLogLine(const std::string& line);
     std::string DescribeEvent(const Coop::Net::EventMessage& event) const;
@@ -167,7 +156,6 @@ private:
     char m_password[32]    = "";
     int  m_hostPort        = 47474;
     char m_chatInput[160]  = "";
-    char m_configFilter[64] = "";
 
     std::deque<std::string> m_log;
 

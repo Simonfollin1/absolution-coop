@@ -1658,6 +1658,12 @@ void CoopMod::RenderWindow()
         return;
     }
 
+    // Four tabs. There were six: one browsed all 1648 engine configuration
+    // variables, which the automatic dump now writes to a file in full, and one
+    // was a research bench full of live readouts of things that cannot be read
+    // live - the SDK takes the keyboard whenever this panel is open, so nobody
+    // has ever seen a key indicator light up or a hit land. Those readings all
+    // go to the log now, where they can be read afterwards and sent to somebody.
     if (ImGui::BeginTabBar("CoopTabs"))
     {
         if (ImGui::BeginTabItem("Session"))
@@ -1675,18 +1681,6 @@ void CoopMod::RenderWindow()
         if (ImGui::BeginTabItem("Rules"))
         {
             RenderRulesTab();
-            ImGui::EndTabItem();
-        }
-
-        if (ImGui::BeginTabItem("Engine"))
-        {
-            RenderEngineTab();
-            ImGui::EndTabItem();
-        }
-
-        if (ImGui::BeginTabItem("Research"))
-        {
-            RenderResearchTab();
             ImGui::EndTabItem();
         }
 
@@ -1714,47 +1708,42 @@ void CoopMod::RenderSessionTab()
     }
 
     // Following somebody into a mission. First thing on the tab, because it is
-    // the first thing anybody needs after connecting - the previous version got
-    // two people into a session and left one of them in the menu with nothing
-    // to press.
-    if (m_session.IsActive() && !m_peerScene.empty())
+    // the first thing anybody needs after connecting.
+    if (m_session.IsActive() && !m_peerScene.empty() && m_publishedScene != m_peerScene)
     {
-        if (m_publishedScene != m_peerScene)
+        ImGui::SeparatorText("They are somewhere else");
+
+        ImGui::TextWrapped("%s is in a level you are not in.",
+                           m_peerSceneOwner.empty() ? "Somebody" : m_peerSceneOwner.c_str());
+
+        ImGui::TextDisabled("%s", m_peerScene.c_str());
+
+        if (ImGui::Button("Go there", ImVec2(180.f, 0.f)))
         {
-            ImGui::SeparatorText("They are somewhere else");
+            std::string error;
 
-            ImGui::TextWrapped("%s is in a level you are not in.",
-                               m_peerSceneOwner.empty() ? "Somebody" : m_peerSceneOwner.c_str());
-
-            ImGui::TextDisabled("%s", m_peerScene.c_str());
-
-            if (ImGui::Button("Go there", ImVec2(180.f, 0.f)))
+            if (Game::SceneSync::LoadScene(m_peerScene, m_peerSceneCheckpoint, error))
             {
-                std::string error;
-
-                if (Game::SceneSync::LoadScene(m_peerScene, m_peerSceneCheckpoint, error))
-                {
-                    m_sceneError.clear();
-                    AddLogLine(std::format("Loading {}", m_peerScene));
-                }
-                else
-                {
-                    m_sceneError = error;
-                    AddLogLine(std::format("Could not go there: {}", error));
-                }
+                m_sceneError.clear();
+                AddLogLine(std::format("Loading {}", m_peerScene));
             }
-
-            ImGui::SameLine();
-            ImGui::TextDisabled("this restarts you into their mission");
-
-            if (!m_sceneError.empty())
+            else
             {
-                ImGui::TextColored(ImVec4(1.f, 0.45f, 0.45f, 1.f), "%s", m_sceneError.c_str());
+                m_sceneError = error;
+                AddLogLine(std::format("Could not go there: {}", error));
             }
+        }
+
+        ImGui::SameLine();
+        ImGui::TextDisabled("this restarts you into their mission");
+
+        if (!m_sceneError.empty())
+        {
+            ImGui::TextColored(ImVec4(1.f, 0.45f, 0.45f, 1.f), "%s", m_sceneError.c_str());
         }
     }
 
-    ImGui::Spacing();
+    ImGui::SeparatorText("You");
     ImGui::InputText("Name", m_playerName, sizeof(m_playerName));
     ImGui::InputText("Password", m_password, sizeof(m_password), ImGuiInputTextFlags_Password);
 
@@ -1773,9 +1762,6 @@ void CoopMod::RenderSessionTab()
             Game::TheDownedState().ResetForNewSession();
             AddLogLine(std::format("Hosting on UDP {}", m_hostPort));
 
-            // Ask the router to open it. Runs on its own thread - discovery
-            // waits seconds for a multicast reply - and hosting does not depend
-            // on it succeeding.
             if (m_useUpnp)
             {
                 m_portMapper.RequestMap(static_cast<uint16_t>(m_hostPort));
@@ -1785,48 +1771,40 @@ void CoopMod::RenderSessionTab()
 
     ImGui::EndDisabled();
 
-    ImGui::Checkbox("Ask the router to open the port (UPnP)", &m_useUpnp);
+    ImGui::SameLine();
+    ImGui::Checkbox("Open the port for me", &m_useUpnp);
 
     if (ImGui::IsItemHovered())
     {
         ImGui::SetTooltip(
-            "Most home routers will do this on request and have done for twenty\n"
-            "years. It saves the host finding the port forwarding page, getting\n"
-            "the protocol right - the field defaults to TCP and every byte here\n"
-            "is UDP - and undoing it afterwards.\n\n"
-            "It is closed again when you leave. If the router says no, nothing\n"
-            "is lost: hosting still works on a LAN or over a VPN.");
+            "Asks the router over UPnP, which saves finding the port forwarding\n"
+            "page and getting the protocol right - that field defaults to TCP and\n"
+            "every byte here is UDP. Closed again when you leave.\n\n"
+            "If the router says no, hosting still works on a LAN or a VPN.");
     }
 
     switch (m_portMapper.GetState())
     {
     case Net::PortMapper::State::Working:
-        ImGui::TextColored(ImVec4(1.f, 0.80f, 0.35f, 1.f), "%s",
-                           m_portMapper.Note().c_str());
+        ImGui::TextColored(ImVec4(1.f, 0.80f, 0.35f, 1.f), "%s", m_portMapper.Note().c_str());
         break;
 
     case Net::PortMapper::State::Mapped:
-        ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.f), "%s",
-                           m_portMapper.Note().c_str());
+        ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.f), "%s", m_portMapper.Note().c_str());
         break;
 
     case Net::PortMapper::State::Failed:
-        ImGui::TextColored(ImVec4(1.f, 0.55f, 0.45f, 1.f), "%s",
-                           m_portMapper.Note().c_str());
+        ImGui::TextColored(ImVec4(1.f, 0.55f, 0.45f, 1.f), "%s", m_portMapper.Note().c_str());
         break;
 
     default:
-        ImGui::TextDisabled("Only the host needs a reachable port. On the same LAN");
-        ImGui::TextDisabled("or a VPN, none of this matters.");
         break;
     }
 
-    // The one thing the other player actually has to be told.
     const std::string external = m_portMapper.ExternalAddress();
 
     if (!external.empty())
     {
-        ImGui::Spacing();
         ImGui::Text("Give them this:");
         ImGui::SameLine();
         ImGui::InputText("##external", const_cast<char*>(external.c_str()),
@@ -1852,13 +1830,11 @@ void CoopMod::RenderSessionTab()
 
     if (m_session.IsActive())
     {
-        ImGui::Spacing();
+        ImGui::SameLine();
 
-        if (ImGui::Button("Leave", ImVec2(180.f, 0.f)))
+        if (ImGui::Button("Leave", ImVec2(120.f, 0.f)))
         {
             m_session.Leave();
-
-            // Closes the mapping again if one was made.
             m_portMapper.Release();
 
             AddLogLine("Left the session");
@@ -1945,15 +1921,15 @@ void CoopMod::RenderPlayersTab()
         ImGui::EndTable();
     }
 
-    ImGui::SeparatorText("How you appear to them");
-
     Game::AvatarSettings& settings = m_avatars.Settings();
 
-    ImGui::Checkbox("Draw teammates in the world", &settings.drawInWorld);
+    ImGui::SeparatorText("How they are drawn");
+
+    ImGui::Checkbox("In the world", &settings.drawInWorld);
     ImGui::Checkbox("Nameplates", &settings.drawNameplates);
     ImGui::Checkbox("Marker beam", &settings.drawBeam);
     ImGui::Checkbox("Distance on the nameplate", &settings.drawDistance);
-    ImGui::SliderFloat("Draw out to", &settings.maxDrawDistance, 25.f, 500.f, "%.0f m");
+    ImGui::SliderFloat("Out to", &settings.maxDrawDistance, 25.f, 500.f, "%.0f m");
     ImGui::Checkbox("HUD overlay", &m_showOverlay);
 
     ImGui::SeparatorText("Instinct");
@@ -1964,8 +1940,8 @@ void CoopMod::RenderPlayersTab()
     {
         ImGui::SetTooltip(
             "Instinct is the game's own see-through-walls view and it already\n"
-            "draws points of interest in it. This puts teammates there too: a\n"
-            "diamond over the head, in their colour, at any distance.");
+            "draws points of interest. This puts teammates there too: a diamond\n"
+            "over the head, in their colour, at any distance.");
     }
 
     ImGui::Checkbox("And only there", &settings.instinctOnly);
@@ -1973,23 +1949,9 @@ void CoopMod::RenderPlayersTab()
     if (ImGui::IsItemHovered())
     {
         ImGui::SetTooltip(
-            "Teammates disappear the rest of the time. This is the better game -\n"
+            "Teammates disappear the rest of the time, which is the better game:\n"
             "co-op stops being a permanent wallhack and knowing where the others\n"
-            "are costs you Instinct, like everything else does.\n\n"
-            "Off by default because detecting Instinct means reading the focus\n"
-            "controller, and nobody has confirmed that reading yet. If the state\n"
-            "below never says 'held' while you hold it, leave this off.");
-    }
-
-    ImGui::Text("Instinct: %s",
-                !m_instinct.Readable() ? "cannot read the focus controller"
-              : m_instinct.Active()    ? "held"
-                                       : "not held");
-
-    if (m_instinct.Readable())
-    {
-        ImGui::SameLine();
-        ImGui::TextDisabled("(meter %.2f)", m_instinct.Amount());
+            "are costs Instinct, like everything else does.");
     }
 }
 
@@ -2010,16 +1972,13 @@ void CoopMod::RenderRulesTab()
     if (progression.followPolicy == Game::FollowPolicy::AutoFollow)
     {
         ImGui::SliderFloat("Grace period", &progression.followGraceSeconds, 0.f, 30.f, "%.0f s");
-        ImGui::TextDisabled("Long enough to finish a fight before you are moved.");
     }
 
-    ImGui::TextDisabled("Forward only. Nobody is ever pulled backwards - that");
-    ImGui::TextDisabled("would delete progress somebody made.");
-
-    ImGui::SeparatorText("Dying");
+    ImGui::TextDisabled("Forward only - nobody is ever pulled backwards.");
 
     int death = static_cast<int>(progression.deathPolicy);
 
+    ImGui::Spacing();
     ImGui::RadioButton("Everyone restarts the section together", &death, 0);
     ImGui::RadioButton("Reload on your own, the others carry on", &death, 1);
     ImGui::RadioButton("Spectate, back in at the next checkpoint", &death, 2);
@@ -2028,7 +1987,9 @@ void CoopMod::RenderRulesTab()
 
     m_progression.SetSettings(progression);
 
-    ImGui::Spacing();
+    // ---- Dying ------------------------------------------------------------
+
+    ImGui::SeparatorText("Dying");
 
     Game::DownedSettings& downed = Game::TheDownedState().Settings();
 
@@ -2045,120 +2006,86 @@ void CoopMod::RenderRulesTab()
             "camera instead of a loading screen.");
     }
 
-    if (downed.enabled)
+    if (!downed.enabled)
     {
-        ImGui::SliderFloat("Health pool", &downed.maxHitPoints, 20.f, 400.f, "%.0f");
-        ImGui::SliderFloat("Cost per hit", &downed.fallbackDamagePerHit, 1.f, 100.f, "%.0f");
-        ImGui::SliderFloat("Regeneration", &downed.regenPerSecond, 0.f, 60.f, "%.0f /s");
-        ImGui::SliderFloat("Regen delay", &downed.regenDelaySeconds, 0.f, 20.f, "%.1f s");
-        ImGui::SliderFloat("Get up by yourself after", &downed.selfReviveSeconds,
-                           0.f, 120.f, "%.0f s");
-        ImGui::SliderFloat("Immune after getting up", &downed.recoveryGraceSeconds,
-                           0.f, 15.f, "%.1f s");
-
-        ImGui::Checkbox("Go limp when you go down", &downed.ragdollWhenDown);
-
-        ImGui::Checkbox("Blind and deafen the guards while you are down",
-                        &m_suppressPerceptionWhenDown);
-
-        if (ImGui::IsItemHovered())
-        {
-            ImGui::SetTooltip(
-                "The engine is never told you went down, so the AI has a live\n"
-                "hostile lying on the floor and keeps shooting it.\n\n"
-                "This switches off what it perceives with: the detection cone\n"
-                "goes to zero degrees, hearing is disabled at its own flag, and\n"
-                "the target tracker is left no range and no field of view. All\n"
-                "of them are the engine's own configuration variables, and every\n"
-                "one is put back exactly as it was when you get up.\n\n"
-                "It applies to every NPC, not only the ones looking at you - for\n"
-                "the seconds somebody is on the floor, that is the trade.");
-        }
-
-        ImGui::TextDisabled("%s", m_perception.Note().c_str());
-
-        ImGui::Checkbox("Also hide the body under the level",
-                        &downed.hideBodyWhenDown);
-
-        if (ImGui::IsItemHovered())
-        {
-            ImGui::SetTooltip(
-                "The older answer, kept as a fallback: rather than stopping the\n"
-                "guards from noticing, it takes away the thing they are noticing.\n"
-                "Leave it off unless they keep shooting you anyway - a body that\n"
-                "stays where it fell is what a death should look like.");
-        }
-
-        if (ImGui::IsItemHovered())
-        {
-            ImGui::SetTooltip(
-                "The engine is never told you went down, so the AI has a live\n"
-                "hostile lying on the floor and keeps shooting it - forty-odd\n"
-                "hits landed on a spectating player in one session.\n\n"
-                "This hides the body and moves it out from under the level once\n"
-                "the fall has had time to read, and puts it back exactly where\n"
-                "it was when you get up. Nothing to shoot at, and no engine\n"
-                "state changed to manage it.");
-        }
-
-        if (downed.hideBodyWhenDown)
-        {
-            ImGui::SliderFloat("Lie there for", &downed.hideAfterSeconds,
-                               0.f, 8.f, "%.1f s");
-        }
-
-        if (ImGui::IsItemHovered())
-        {
-            ImGui::SetTooltip(
-                "Hands the body to physics the way the engine does on a real\n"
-                "death, so 47 falls where he stood instead of standing there at\n"
-                "zero health looking fine. Getting up blends back to animation.\n\n"
-                "If it ever leaves you stuck on the floor, turn it off - and the\n"
-                "log will say exactly which calls ran before it happened.");
-        }
-
-        ImGui::Checkbox("Also set the engine's god-mode flag",
-                        &downed.alsoUseEngineImmunity);
-
-        if (ImGui::IsItemHovered())
-        {
-            ImGui::SetTooltip(
-                "The backstop for damage that never reaches the interception:\n"
-                "falls, drowning, scripted kills. Without it those still run the\n"
-                "engine's death sequence, which reloads a checkpoint and resets\n"
-                "your whole copy of the level while everyone else carries on.\n\n"
-                "It is the same flag the SDK's Player mod exposes, and it is put\n"
-                "back the way it was when the mod lets go. Steam only - the\n"
-                "address is not known for the GOG build.");
-        }
-
-        ImGui::TextDisabled("%s", Game::TheDownedState().ImmunityNote().c_str());
-
-        if (downed.selfReviveSeconds <= 0.f)
-        {
-            ImGui::TextColored(ImVec4(1.f, 0.8f, 0.35f, 1.f),
-                "At zero you stay down until a teammate reaches a checkpoint or");
-            ImGui::TextColored(ImVec4(1.f, 0.8f, 0.35f, 1.f),
-                "the level changes. Alone, that never happens.");
-        }
-
-        ImGui::TextDisabled("Every hit costs the same: the real figure lives behind");
-        ImGui::TextDisabled("SHitInfo::GetBaseDamage, which has no known address yet.");
+        return;
     }
 
-    ImGui::SeparatorText("Being shot at, and watching");
+    ImGui::SliderFloat("Health pool", &downed.maxHitPoints, 20.f, 400.f, "%.0f");
+    ImGui::SliderFloat("Cost per hit", &downed.fallbackDamagePerHit, 1.f, 100.f, "%.0f");
+    ImGui::SliderFloat("Regeneration", &downed.regenPerSecond, 0.f, 60.f, "%.0f /s");
+    ImGui::SliderFloat("Regen delay", &downed.regenDelaySeconds, 0.f, 20.f, "%.1f s");
+    ImGui::SliderFloat("Get up by yourself after", &downed.selfReviveSeconds, 0.f, 120.f, "%.0f s");
+    ImGui::SliderFloat("Immune after getting up", &downed.recoveryGraceSeconds, 0.f, 15.f, "%.1f s");
 
-    ImGui::Checkbox("Red screen when you are hurt", &m_showHurt);
+    if (downed.selfReviveSeconds <= 0.f)
+    {
+        ImGui::TextColored(ImVec4(1.f, 0.8f, 0.35f, 1.f),
+            "At zero you stay down until a teammate reaches a checkpoint.");
+    }
+
+    ImGui::Spacing();
+
+    ImGui::Checkbox("Go limp when you go down", &downed.ragdollWhenDown);
+
+    ImGui::Checkbox("And leave the fight", &downed.hideBodyWhenDown);
 
     if (ImGui::IsItemHovered())
     {
         ImGui::SetTooltip(
-            "Damage in Absolution is a red vignette closing in from the edges.\n"
-            "Taking the health off the engine took that with it, so this draws\n"
-            "it back from the pool the mod owns.\n\n"
-            "The health ring around the radar is the engine's and still reads\n"
-            "full - it does not know about this pool. See the HUD probe in the\n"
-            "log for whether that can be fixed.");
+            "The engine is never told you went down, so the AI has a live hostile\n"
+            "lying on the floor and keeps shooting it. This hides the body once\n"
+            "the fall has read, and puts it back exactly where it was when you\n"
+            "get up.\n\n"
+            "Turning the guards' senses off was tried instead and did not work:\n"
+            "perception decides whether they find a target, not whether they let\n"
+            "one go.");
+    }
+
+    if (downed.hideBodyWhenDown)
+    {
+        ImGui::SliderFloat("Lie there for", &downed.hideAfterSeconds, 0.f, 8.f, "%.1f s");
+    }
+
+    ImGui::Checkbox("Also set the engine's god-mode flag", &downed.alsoUseEngineImmunity);
+
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetTooltip(
+            "The backstop for damage that never reaches the interception: falls,\n"
+            "drowning, scripted kills. Without it those still run the engine's\n"
+            "death sequence, which reloads a checkpoint.\n\n"
+            "Same flag the SDK's Player mod exposes, put back on the way out.\n"
+            "Steam only - the address is not known for the GOG build.");
+    }
+
+    ImGui::Checkbox("Blind the guards while you are down", &m_suppressPerceptionWhenDown);
+
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetTooltip(
+            "Switches off the detection cone, hearing and the target tracker\n"
+            "through the engine's own configuration, and puts every one back.\n\n"
+            "It does not stop guards already shooting at you - that is what\n"
+            "leaving the fight above is for - but it stops new ones noticing.");
+    }
+
+    // ---- Seeing -----------------------------------------------------------
+
+    ImGui::SeparatorText("What you see");
+
+    ImGui::Checkbox("Red screen when you are hurt", &m_showHurt);
+
+    ImGui::Checkbox("Drive the health ring from this pool", &m_driveHudHealth);
+
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetTooltip(
+            "The ring around the radar reads the engine's health, which cannot\n"
+            "move while damage is being intercepted - so it sat at full while\n"
+            "this pool emptied. With this on it shows the pool instead.\n\n"
+            "It writes one float that only the HUD reads. The engine decides\n"
+            "nothing from it, so it cannot make you die or stop you dying.");
     }
 
     ImGui::Checkbox("Mouse look while spectating", &m_mouseLook);
@@ -2168,97 +2095,62 @@ void CoopMod::RenderRulesTab()
         ImGui::SliderFloat("Sensitivity", &m_mouseSensitivity, 0.02f, 0.60f, "%.2f deg/px");
         ImGui::SliderFloat("Smoothing", &m_mouseSmoothing, 0.f, 0.95f, "%.2f");
         ImGui::Checkbox("Invert Y", &m_invertMouseY);
-
-        ImGui::TextDisabled("Arrow keys still work, and PgUp/PgDn move in and out.");
     }
 }
 
-void CoopMod::RenderEngineTab()
+void CoopMod::RenderDiagnosticsTab()
 {
+    const Net::SessionStatus status = m_session.Status();
+    const Game::BuildInfo&   build  = Game::BuildInfo::Get();
+    Game::DownedState&       downed = Game::TheDownedState();
+
+    // Deliberately short. Everything worth knowing is written to mods\Coop.log
+    // as it happens, including all of this - the panel cannot be open while the
+    // game has input, so anything that only lives here is unreadable by anyone
+    // actually playing.
     ImGui::TextWrapped(
-        "Every configuration variable the engine has registered, read straight "
-        "off ZConfigCommand's list. No offsets and no hooks, so this works the "
-        "same on Steam and GOG.");
+        "All of this, and everything that happens while you play, is written to "
+        "mods\\Coop.log as it happens. Send that file rather than reading this.");
 
-    ImGui::Spacing();
+    ImGui::SeparatorText("Game");
+    ImGui::Text("%s", build.Describe().c_str());
+    ImGui::Text("Chapter %u.%u, checkpoint %d, %u actors alive",
+                m_probe.LocalState().level, m_probe.LocalState().section,
+                m_probe.CurrentJumpPoint(), m_probe.AliveActorCount());
 
-    if (ImGui::Button("Read them", ImVec2(150.f, 0.f)))
+    if (!m_publishedScene.empty())
     {
-        m_configVars.Refresh();
-        AddLogLine(m_configVars.Diagnostic());
+        ImGui::TextDisabled("%s", m_publishedScene.c_str());
     }
 
-    ImGui::SameLine();
-    ImGui::TextDisabled("%s", m_configVars.Diagnostic().c_str());
+    ImGui::SeparatorText("Mod");
 
-    if (!m_configVars.Walked())
-    {
-        return;
-    }
+    ImGui::Text("Keys: %s",
+                !m_bindingsEnabled  ? "off in the ini"
+              : m_bindingsAccepted  ? "registered"
+                                    : "REJECTED by the engine");
 
-    ImGui::Spacing();
-    ImGui::InputText("Filter", m_configFilter, sizeof(m_configFilter));
+    ImGui::Text("Damage interception: %s", downed.IsArmed() ? "armed" : "not armed");
+    ImGui::TextDisabled("%s", downed.ImmunityNote().c_str());
 
-    const std::vector<const Game::ConfigVar*> matches = m_configVars.Find(m_configFilter);
+    ImGui::Text("Health %.0f / %.0f, %u hits, downed %u times",
+                downed.HitPoints(), downed.Settings().maxHitPoints,
+                downed.HitsTaken(), downed.TimesDowned());
 
-    ImGui::TextDisabled("%zu of %zu", matches.size(), m_configVars.All().size());
+    ImGui::Text("Engine health: %s", m_engineHealth.Note().c_str());
 
-    if (ImGui::BeginChild("cvars", ImVec2(0.f, 260.f), true))
-    {
-        if (ImGui::BeginTable("cvartable", 3,
-                ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY))
-        {
-            ImGui::TableSetupColumn("Name");
-            ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 70.f);
-            ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthFixed, 110.f);
-            ImGui::TableHeadersRow();
+    ImGui::SeparatorText("Network");
+    ImGui::Text("Peer %u on port %u, %u ms to the host",
+                status.localPeerId, status.boundPort, status.hostRoundTripMs);
+    ImGui::Text("Sent %llu, received %llu, dropped %llu",
+                static_cast<unsigned long long>(status.packetsSent),
+                static_cast<unsigned long long>(status.packetsReceived),
+                static_cast<unsigned long long>(status.packetsDropped));
 
-            for (const Game::ConfigVar* entry : matches)
-            {
-                ImGui::TableNextRow();
+    ImGui::Text("Frame cost: %.0f us average, %.0f us worst",
+                m_cost.AverageMicros(), m_cost.WorstMicros());
 
-                ImGui::TableNextColumn();
-                ImGui::Text("%s", entry->name.c_str());
-
-                ImGui::TableNextColumn();
-                ImGui::TextDisabled("%s",
-                    entry->type == Game::ConfigVarType::Float  ? "float"
-                  : entry->type == Game::ConfigVarType::Int    ? "int"
-                  : entry->type == Game::ConfigVarType::String ? "string"
-                                                               : "?");
-
-                ImGui::TableNextColumn();
-                ImGui::Text("%s", entry->ValueText().c_str());
-            }
-
-            ImGui::EndTable();
-        }
-    }
-
-    ImGui::EndChild();
-}
-
-void CoopMod::RenderResearchTab()
-{
-    Game::HitInspector& hits   = Game::TheHitInspector();
-    Game::DownedState&  downed = Game::TheDownedState();
-
-    ImGui::TextWrapped(
-        "Things only a running game can answer. None of this changes how the "
-        "mod plays except where it says so.");
-
-    ImGui::Spacing();
-    ImGui::TextWrapped(
-        "All of it is written to two files by itself, so there is nothing here "
-        "worth photographing: mods\\Coop.log is the timeline - every hit with "
-        "its bytes, every key going down, every checkpoint, every death - and "
-        "coop-dump-NNN.txt next to HMA.exe holds the facts that do not change, "
-        "written six seconds into the first level without anybody pressing "
-        "anything.");
-
-    // ---- The dump ---------------------------------------------------------
-
-    ImGui::SeparatorText("Write the facts out again");
+    ImGui::SeparatorText("Write a dump");
 
     if (ImGui::Button("Dump now", ImVec2(150.f, 0.f)))
     {
@@ -2272,175 +2164,20 @@ void CoopMod::RenderResearchTab()
     }
 
     ImGui::SameLine();
-    ImGui::TextDisabled("only needed if you want a second one, later in the level");
+    ImGui::TextDisabled("one is written by itself six seconds into every level");
 
     if (!m_lastDumpPath.empty())
     {
-        ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.f), "%s", m_lastDumpPath.c_str());
-    }
-    else if (!m_lastDumpError.empty())
-    {
-        ImGui::TextColored(ImVec4(1.f, 0.45f, 0.45f, 1.f), "%s", m_lastDumpError.c_str());
+        ImGui::TextDisabled("%s", m_lastDumpPath.c_str());
     }
 
-    // ---- Hits -------------------------------------------------------------
-
-    ImGui::SeparatorText("What is in a hit");
+    // The one research probe still worth a button: it is the only way to find
+    // where the engine keeps the health, and it needs a deliberate hit.
+    ImGui::SeparatorText("Find the engine's health field");
 
     ImGui::TextWrapped(
-        "Every intercepted hit is captured whole. The damage figure is behind "
-        "an accessor with no known address, but the struct it reads from "
-        "arrives here by reference - so the slots that differ between a pistol "
-        "and a shotgun are worth more than the accessor.");
-
-    bool capturing = hits.Enabled();
-
-    if (ImGui::Checkbox("Capture hits", &capturing))
-    {
-        hits.SetEnabled(capturing);
-    }
-
-    ImGui::SameLine();
-
-    if (ImGui::Button("Clear"))
-    {
-        hits.Clear();
-    }
-
-    ImGui::SameLine();
-    ImGui::Text("%u seen, %zu kept", hits.Total(), hits.Kept());
-
-    const std::vector<std::pair<uintptr_t, uint32_t>> callers = hits.Callers();
-
-    if (!callers.empty())
-    {
-        ImGui::Spacing();
-        ImGui::TextDisabled("Called from (these are where the damage is computed):");
-
-        for (const auto& [rva, count] : callers)
-        {
-            ImGui::Text("  HMA.exe + %08X   %u hits", static_cast<unsigned>(rva), count);
-        }
-    }
-
-    if (hits.Kept() > 0 &&
-        ImGui::BeginTable("hitslots", 3,
-            ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY,
-            ImVec2(0.f, 200.f)))
-    {
-        ImGui::TableSetupColumn("Offset", ImGuiTableColumnFlags_WidthFixed, 70.f);
-        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 60.f);
-        ImGui::TableSetupColumn("Values seen (hex, float, int)");
-        ImGui::TableHeadersRow();
-
-        constexpr size_t kDwords = Game::kHitCaptureBytes / sizeof(uint32_t);
-
-        for (size_t i = 0; i < kDwords; ++i)
-        {
-            const std::vector<uint32_t> values = hits.ValuesAt(i);
-
-            if (values.empty())
-            {
-                continue;
-            }
-
-            ImGui::TableNextRow();
-
-            ImGui::TableNextColumn();
-            ImGui::Text("+0x%02zX", i * sizeof(uint32_t));
-
-            ImGui::TableNextColumn();
-
-            if (values.size() > 1)
-            {
-                ImGui::TextColored(ImVec4(1.f, 0.82f, 0.35f, 1.f), "varies");
-            }
-            else
-            {
-                ImGui::TextDisabled("same");
-            }
-
-            ImGui::TableNextColumn();
-
-            std::string line;
-
-            for (size_t v = 0; v < values.size() && v < 4; ++v)
-            {
-                line += Game::DescribeDword(values[v]);
-                line += "   ";
-            }
-
-            ImGui::Text("%s", line.c_str());
-        }
-
-        ImGui::EndTable();
-    }
-
-    // ---- The health ring --------------------------------------------------
-
-    ImGui::SeparatorText("Does the ring take a write");
-
-    ImGui::TextWrapped(
-        "Reading cannot settle whether the health offset is right: nothing is "
-        "allowed to damage the engine while the mod intercepts, so a correct "
-        "read and a wrong one both sit at full. Writing does settle it. Press "
-        "this and look at the ring around the radar.");
-
-    ImGui::Text("%s", m_engineHealth.Note().c_str());
-
-    ImGui::BeginDisabled(!m_engineHealth.Readable());
-
-    if (ImGui::Button("Set the ring to half", ImVec2(180.f, 0.f)))
-    {
-        const float max = m_engineHealth.Max() > 0.f ? m_engineHealth.Max() : 100.f;
-
-        const bool wrote = m_engineHealth.Write(max * 0.5f);
-
-        AddLogLine(wrote
-            ? std::format("Wrote {:.1f} to the ring. If it moved, the offset is right.",
-                          max * 0.5f)
-            : "The write faulted - the offset is wrong.");
-    }
-
-    ImGui::SameLine();
-
-    if (ImGui::Button("Put it back", ImVec2(140.f, 0.f)))
-    {
-        const float max = m_engineHealth.Max() > 0.f ? m_engineHealth.Max() : 100.f;
-
-        m_engineHealth.Write(max);
-        AddLogLine("Ring restored to full");
-    }
-
-    ImGui::EndDisabled();
-
-    ImGui::Spacing();
-
-    ImGui::Checkbox("Drive the ring from the mod's health", &m_driveHudHealth);
-
-    if (ImGui::IsItemHovered())
-    {
-        ImGui::SetTooltip(
-            "With this on, the ring shows the pool the mod is keeping rather\n"
-            "than the engine's untouched full health. It writes one float that\n"
-            "only the HUD reads - the engine decides nothing from it, so this\n"
-            "cannot make you die or stop you dying.\n\n"
-            "Turn it on once the button above has proved the ring moves.");
-    }
-
-    // ---- The one-hit probe ------------------------------------------------
-
-    ImGui::SeparatorText("Where the engine keeps your health");
-
-    ImGui::TextWrapped(
-        "The mod carries its own health pool because the engine's is at an "
-        "offset nobody has found. This is how to find it: snapshot the player "
-        "object, let exactly one hit reach the engine, and see what moved.");
-
-    ImGui::TextColored(ImVec4(1.f, 0.82f, 0.35f, 1.f),
-        "That hit is real. It can kill you, and dying reloads a checkpoint.");
-    ImGui::TextColored(ImVec4(1.f, 0.82f, 0.35f, 1.f),
-        "Do it at full health, somewhere you do not mind losing.");
+        "Snapshots the player, lets exactly one hit reach the engine, and logs "
+        "which bytes moved. That hit is real and can kill you.");
 
     ImGui::BeginDisabled(m_awaitingPassThrough || !downed.IsArmed());
 
@@ -2479,214 +2216,14 @@ void CoopMod::RenderResearchTab()
         }
     }
 
-    if (!downed.IsArmed())
-    {
-        ImGui::TextDisabled("Interception is not armed, so there is nothing to let through.");
-    }
-
     if (!m_playerDiffNote.empty())
     {
-        ImGui::Text("%s", m_playerDiffNote.c_str());
+        ImGui::TextDisabled("%s", m_playerDiffNote.c_str());
     }
-
-    if (!m_playerDeltas.empty() &&
-        ImGui::BeginTable("playerdiff", 3,
-            ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY,
-            ImVec2(0.f, 180.f)))
-    {
-        ImGui::TableSetupColumn("Offset", ImGuiTableColumnFlags_WidthFixed, 80.f);
-        ImGui::TableSetupColumn("Before");
-        ImGui::TableSetupColumn("After");
-        ImGui::TableHeadersRow();
-
-        for (const PlayerDelta& delta : m_playerDeltas)
-        {
-            ImGui::TableNextRow();
-
-            ImGui::TableNextColumn();
-            ImGui::Text("+0x%03zX", delta.offset);
-
-            ImGui::TableNextColumn();
-            ImGui::Text("%s", Game::DescribeDword(delta.before).c_str());
-
-            ImGui::TableNextColumn();
-            ImGui::Text("%s", Game::DescribeDword(delta.after).c_str());
-        }
-
-        ImGui::EndTable();
-
-        ImGui::TextDisabled("A float that dropped by a plausible amount is the");
-        ImGui::TextDisabled("health. The whole list is also in mods\\Coop.log.");
-    }
-
-    // ---- Live key state ---------------------------------------------------
-
-    ImGui::SeparatorText("Are the keys reaching us");
-
-    ImGui::TextWrapped(
-        "Live. Every one of these reads false while this panel has focus, "
-        "because the SDK switches the game's input off while it holds the "
-        "keyboard - so this is only meaningful with the panel closed, which "
-        "means the log below is the part to read afterwards.");
-
-    const struct { const char* name; ZInputAction* action; } watched[] = {
-        { "toggle",   &m_toggleAction },
-        { "follow",   &m_followAction },
-        { "marker",   &m_markerAction },
-        { "spec <",   &m_specLeft     },
-        { "spec >",   &m_specRight    },
-        { "spec ^",   &m_specUp       },
-        { "spec v",   &m_specDown     },
-        { "spec in",  &m_specCloser   },
-        { "spec out", &m_specFurther  },
-    };
-
-    for (const auto& entry : watched)
-    {
-        const bool down = entry.action->Digital();
-
-        ImGui::TextColored(down ? ImVec4(0.45f, 0.85f, 0.45f, 1.f)
-                                : ImVec4(0.55f, 0.55f, 0.55f, 1.f),
-                           "%-9s %s", entry.name, down ? "DOWN" : "-");
-    }
-}
-
-void CoopMod::RenderDiagnosticsTab()
-{
-    const Net::SessionStatus status  = m_session.Status();
-    const Game::BuildInfo&   build   = Game::BuildInfo::Get();
-    Game::DownedState&       downed  = Game::TheDownedState();
-
-    ImGui::SeparatorText("Game");
-    ImGui::Text("%s", build.Describe().c_str());
-    ImGui::Text("Chapter %u, section %u, checkpoint %d",
-                m_probe.LocalState().level, m_probe.LocalState().section,
-                m_probe.CurrentJumpPoint());
-
-    if (ImGui::IsItemHovered())
-    {
-        ImGui::SetTooltip(
-            "The engine calls these jump points: numbered restart positions the\n"
-            "level defines, one per checkpoint. It is what \"jump to where the\n"
-            "others are\" moves you to, and it is the only unit of progress the\n"
-            "game exposes to us.\n\n"
-            "It only moves when a real checkpoint fires - the on-screen kind.\n"
-            "Walking into the next part of the map is not one of those, so\n"
-            "seeing 0 while the level clearly moved on is normal.");
-    }
-
-    ImGui::SeparatorText("Keys");
-
-    if (!m_bindingsEnabled)
-    {
-        ImGui::TextColored(ImVec4(1.f, 0.80f, 0.35f, 1.f),
-                           "off - EnableBindings = false in mods\\Coop.ini");
-    }
-    else if (m_bindingsAccepted)
-    {
-        ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.f), "registered");
-    }
-    else
-    {
-        ImGui::TextColored(ImVec4(1.f, 0.45f, 0.45f, 1.f), "the engine did not accept them");
-    }
-
-    ImGui::Text("%s panel, %s get up or follow, %s marker, arrows to spectate",
-                m_keyToggle.c_str(), m_keyFollow.c_str(), m_keyMarker.c_str());
-
-    ImGui::TextWrapped(
-        "None of them do anything while this panel has focus: the SDK switches "
-        "the game's input off whenever it holds the keyboard. Close it with the "
-        "key left of 1, then press them.");
-
-    if (!m_bindingExpression.empty())
-    {
-        ImGui::TextDisabled("%s", m_bindingExpression.c_str());
-    }
-
-    ImGui::SeparatorText("Actors");
-    ImGui::Text("Listed as alive: %u (the engine caps this list at 50), %u flagged dead",
-                m_probe.AliveActorCount(), m_probe.DeadFlaggedCount());
-    ImGui::Text("Deaths seen: %u by the dead flag, %u by leaving the list",
-                m_probe.DeathsByFlag(), m_probe.DeathsByVanish());
-    ImGui::TextDisabled("Whether a killed actor stays listed with a flag set or");
-    ImGui::TextDisabled("simply leaves is not documented, so both are counted.");
-
-    ImGui::SeparatorText("The engine's own health");
-
-    if (m_engineHealth.Readable())
-    {
-        ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.f), "%s",
-                           m_engineHealth.Note().c_str());
-    }
-    else
-    {
-        ImGui::TextColored(ImVec4(1.f, 0.80f, 0.35f, 1.f), "%s",
-                           m_engineHealth.Note().c_str());
-    }
-
-    if (downed.Settings().alsoUseEngineImmunity)
-    {
-        ImGui::TextDisabled("Standing still at full is correct while god mode is on:");
-        ImGui::TextDisabled("bullets are intercepted and everything else is blocked,");
-        ImGui::TextDisabled("so nothing in the game can move this number.");
-    }
-    else
-    {
-        ImGui::TextDisabled("God mode is off, so close combat, falls and drowning");
-        ImGui::TextDisabled("should move this. Bullets should not - those are ours.");
-    }
-
-    ImGui::SeparatorText("Damage interception");
-
-    if (downed.IsArmed())
-    {
-        ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.f), "armed");
-    }
-    else
-    {
-        ImGui::TextColored(ImVec4(1.f, 0.80f, 0.35f, 1.f), "not armed");
-    }
-
-    ImGui::TextWrapped("%s", downed.Diagnostic().c_str());
-    ImGui::TextWrapped("%s", downed.ImmunityNote().c_str());
-
-    ImGui::Text("Health %.0f / %.0f, %u hits taken, downed %u times",
-                downed.HitPoints(), downed.Settings().maxHitPoints,
-                downed.HitsTaken(), downed.TimesDowned());
-
-    ImGui::Text("State: %s",
-                downed.Phase() == Game::DownedPhase::Downed     ? "down"
-              : downed.Phase() == Game::DownedPhase::Recovering ? "just up, briefly immune"
-                                                                : "up");
-
-    if (downed.IsDowned())
-    {
-        ImGui::Text("Down for %.0fs, self-revive in %.0fs",
-                    downed.DownedSeconds(), downed.SecondsUntilSelfRevive());
-    }
-    else if (downed.SecondsOfGraceLeft() > 0.f)
-    {
-        ImGui::Text("Immune for another %.1fs", downed.SecondsOfGraceLeft());
-    }
-
-    ImGui::SeparatorText("Network");
-    ImGui::Text("Local peer id: %u", status.localPeerId);
-    ImGui::Text("Bound port: %u", status.boundPort);
-    ImGui::Text("Host round trip: %u ms", status.hostRoundTripMs);
-    ImGui::Text("Packets sent %llu, received %llu, dropped %llu",
-                static_cast<unsigned long long>(status.packetsSent),
-                static_cast<unsigned long long>(status.packetsReceived),
-                static_cast<unsigned long long>(status.packetsDropped));
-
-    ImGui::SeparatorText("Cost");
-    ImGui::Text("%s: last %.0f us, average %.0f us, worst %.0f us over %u frames",
-                m_cost.Label(), m_cost.LastMicros(), m_cost.AverageMicros(),
-                m_cost.WorstMicros(), m_cost.TotalFrames());
 
     ImGui::SeparatorText("Log");
 
-    if (ImGui::BeginChild("log", ImVec2(0.f, 160.f), true))
+    if (ImGui::BeginChild("log", ImVec2(0.f, 140.f), true))
     {
         for (const std::string& line : m_log)
         {
