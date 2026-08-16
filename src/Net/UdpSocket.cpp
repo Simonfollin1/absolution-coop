@@ -3,6 +3,7 @@
 #include <ws2tcpip.h>
 
 #include <cstdio>
+#include <cstdlib>
 
 #include "Net/UdpSocket.h"
 
