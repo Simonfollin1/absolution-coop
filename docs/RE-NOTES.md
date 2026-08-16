@@ -667,6 +667,19 @@ That is the next change, and it is not made on the strength of a decompilation
 alone: the mod reads and logs both values now, and one session showing them
 move for a fall and for a close-combat sequence is what earns the rewrite.
 
+**First reading from the game: `115.0 / 115.0`.** Not the 100 the headers give
+as the default maximum — and that is the strongest confirmation available. Two
+unrelated chains, one through `ZHUDManager` and one through a global and two
+hops, agreeing on the same non-round number is not something wrong offsets do.
+
+It did not move, and that was also correct: the same panel reported the god-mode
+flag set and the interception armed, which between them leave nothing in the
+game able to change it. Reading can never settle this — a right offset and a
+wrong one both sit at full while everything is blocked. **Writing settles it**,
+and it is also the feature: the ring is the only health a player can see, so
+driving it from the mod's own pool is what makes the mod's health visible at
+all. It writes one float that nothing but the HUD reads.
+
 **`FUN_00806180` confirms the hit layout from the other side.** It is what fills
 the struct, and it writes exactly what was measured:
 

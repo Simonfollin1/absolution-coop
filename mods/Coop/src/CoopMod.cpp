@@ -510,6 +510,18 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
     // trusted before the whole damage model is rebuilt on top of them.
     m_engineHealth.Update();
 
+    // The ring around the radar reads the engine's health, and the engine's
+    // health cannot move while the mod is intercepting damage - so the only
+    // health the player can actually see has been stuck at full the whole time.
+    // Writing the mod's own pool into it is what closes that gap, and it
+    // touches nothing the engine uses to decide anything.
+    if (m_driveHudHealth && m_engineHealth.Readable() && Game::TheDownedState().IsArmed())
+    {
+        const float max = m_engineHealth.Max() > 0.f ? m_engineHealth.Max() : 100.f;
+
+        m_engineHealth.Write(Game::TheDownedState().HitPointsFraction() * max);
+    }
+
     TraceWorldChanges();
     TraceKeys();
     AutoDumpWhenReady(deltaSeconds);
@@ -672,9 +684,17 @@ void CoopMod::TraceWorldChanges()
     {
         m_tracedEngineHealth = m_engineHealth.Current();
 
-        Diag::Log("engine health %.2f (max %.2f, dropped %.2f) | mod pool %.0f",
+        // God mode goes in the same line on purpose. The first session watching
+        // this reported the health "stuck" at full, which was correct and not a
+        // fault: with the flag set and the interception armed, nothing in the
+        // game is permitted to move that number. A reading of it is worthless
+        // without knowing that, so they travel together.
+        Diag::Log("engine health %.2f (max %.2f, dropped %.2f) | mod pool %.0f | %s",
                   m_engineHealth.Current(), m_engineHealth.Max(),
-                  m_engineHealth.LastDrop(), Game::TheDownedState().HitPoints());
+                  m_engineHealth.LastDrop(), Game::TheDownedState().HitPoints(),
+                  Game::TheDownedState().Settings().alsoUseEngineImmunity
+                      ? "god mode ON - nothing can move this"
+                      : "god mode off");
 
         // Once, the object the maximum lives in. The writable current health
         // should be a float near it, and this is how we find out which.
@@ -2028,6 +2048,58 @@ void CoopMod::RenderResearchTab()
         ImGui::EndTable();
     }
 
+    // ---- The health ring --------------------------------------------------
+
+    ImGui::SeparatorText("Does the ring take a write");
+
+    ImGui::TextWrapped(
+        "Reading cannot settle whether the health offset is right: nothing is "
+        "allowed to damage the engine while the mod intercepts, so a correct "
+        "read and a wrong one both sit at full. Writing does settle it. Press "
+        "this and look at the ring around the radar.");
+
+    ImGui::Text("%s", m_engineHealth.Note().c_str());
+
+    ImGui::BeginDisabled(!m_engineHealth.Readable());
+
+    if (ImGui::Button("Set the ring to half", ImVec2(180.f, 0.f)))
+    {
+        const float max = m_engineHealth.Max() > 0.f ? m_engineHealth.Max() : 100.f;
+
+        const bool wrote = m_engineHealth.Write(max * 0.5f);
+
+        AddLogLine(wrote
+            ? std::format("Wrote {:.1f} to the ring. If it moved, the offset is right.",
+                          max * 0.5f)
+            : "The write faulted - the offset is wrong.");
+    }
+
+    ImGui::SameLine();
+
+    if (ImGui::Button("Put it back", ImVec2(140.f, 0.f)))
+    {
+        const float max = m_engineHealth.Max() > 0.f ? m_engineHealth.Max() : 100.f;
+
+        m_engineHealth.Write(max);
+        AddLogLine("Ring restored to full");
+    }
+
+    ImGui::EndDisabled();
+
+    ImGui::Spacing();
+
+    ImGui::Checkbox("Drive the ring from the mod's health", &m_driveHudHealth);
+
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetTooltip(
+            "With this on, the ring shows the pool the mod is keeping rather\n"
+            "than the engine's untouched full health. It writes one float that\n"
+            "only the HUD reads - the engine decides nothing from it, so this\n"
+            "cannot make you die or stop you dying.\n\n"
+            "Turn it on once the button above has proved the ring moves.");
+    }
+
     // ---- The one-hit probe ------------------------------------------------
 
     ImGui::SeparatorText("Where the engine keeps your health");
@@ -2225,9 +2297,17 @@ void CoopMod::RenderDiagnosticsTab()
                            m_engineHealth.Note().c_str());
     }
 
-    ImGui::TextDisabled("Read from where the health ring reads it. Nothing acts on");
-    ImGui::TextDisabled("it yet - it is being watched before the damage model is");
-    ImGui::TextDisabled("rebuilt on top of it.");
+    if (downed.Settings().alsoUseEngineImmunity)
+    {
+        ImGui::TextDisabled("Standing still at full is correct while god mode is on:");
+        ImGui::TextDisabled("bullets are intercepted and everything else is blocked,");
+        ImGui::TextDisabled("so nothing in the game can move this number.");
+    }
+    else
+    {
+        ImGui::TextDisabled("God mode is off, so close combat, falls and drowning");
+        ImGui::TextDisabled("should move this. Bullets should not - those are ours.");
+    }
 
     ImGui::SeparatorText("Damage interception");
 

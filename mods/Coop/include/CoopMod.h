@@ -211,6 +211,11 @@ private:
 
     // Rises on every hit and falls on its own, so a hit that costs a quarter of
     // the pool still reads as a hit rather than as a slightly darker edge.
+    // Writes the mod's pool into the field the health ring is drawn from, so
+    // the only health the player can see is the one the mod is actually
+    // keeping. Off until somebody has watched the ring move.
+    bool     m_driveHudHealth = false;
+
     bool     m_showHurt    = true;
     float    m_hurtFlash   = 0.f;
     uint32_t m_hurtLastHit = 0;

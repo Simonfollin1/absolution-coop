@@ -63,6 +63,20 @@ namespace Coop::Game
             }
         }
 
+        bool WriteFloatGuarded(uintptr_t address, float value)
+        {
+            __try
+            {
+                *reinterpret_cast<float*>(address) = value;
+
+                return true;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                return false;
+            }
+        }
+
         bool CopyGuarded(const void* source, uint8_t* destination, size_t count)
         {
             __try
@@ -163,6 +177,34 @@ namespace Coop::Game
             ? std::format("{:.1f} / {:.1f} from the HUD, maximum via {:08X}",
                           current, max, m_healthObject)
             : std::format("{:.1f} from the HUD, maximum unreadable", current);
+    }
+
+    bool EngineHealth::Write(float value)
+    {
+        if (!HUDManager)
+        {
+            return false;
+        }
+
+        const uintptr_t hud = reinterpret_cast<uintptr_t>(HUDManager);
+
+        if (!WriteFloatGuarded(hud + kHudCurrentHealth, value))
+        {
+            m_note = "the HUD's health field would not take a write";
+            return false;
+        }
+
+        // The drawing function compares the two and returns early when they
+        // match, so writing only the live value can leave the ring showing
+        // whatever it drew last. Making the drawn copy disagree is what
+        // guarantees the next call redraws.
+        WriteFloatGuarded(hud + kHudDrawnHealth, value - 1.f);
+
+        m_lastWritten = value;
+        m_previous    = value;
+        m_current     = value;
+
+        return true;
     }
 
     size_t EngineHealth::SnapshotHealthObject(uint8_t* destination, size_t count) const

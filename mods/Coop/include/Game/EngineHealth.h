@@ -49,9 +49,29 @@ namespace Coop::Game
         // Where the values were read from, for the log and the panel.
         const std::string& Note() const { return m_note; }
 
+        // Writes the value the ring is drawn from.
+        //
+        // This is the test that settles whether the offset is right, because
+        // reading cannot: nothing is allowed to damage the engine while the mod
+        // is intercepting, so the value sitting at exactly 100 of 100 is what a
+        // correct read and a wrong one both look like. Writing 50 and watching
+        // the ring is unambiguous either way.
+        //
+        // It is also the feature. The ring is the only health the player can
+        // see, and driving it from the mod's own pool is what makes the fake
+        // health visible without touching the engine's damage at all.
+        //
+        // The function that draws it only redraws when +0x640 differs from
+        // +0x644, so this deliberately disturbs both.
+        bool Write(float value);
+
         // Copies the object the maximum lives in, so the log can show which
         // nearby float is the writable current health. Returns bytes copied.
         size_t SnapshotHealthObject(uint8_t* destination, size_t count) const;
+
+        // What the ring was last told to show, and whether we are the ones
+        // telling it. Zero when the mod has not written.
+        float LastWritten() const { return m_lastWritten; }
 
         // The object's address, or zero.
         uintptr_t HealthObject() const { return m_healthObject; }
@@ -63,6 +83,7 @@ namespace Coop::Game
         float     m_max          = -1.f;
         float     m_lastDrop     = 0.f;
         uintptr_t m_healthObject = 0;
+        float     m_lastWritten  = 0.f;
 
         std::string m_note;
     };
