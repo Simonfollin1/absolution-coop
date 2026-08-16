@@ -28,6 +28,16 @@ namespace Coop::Game
         uint32_t    pingMs    = 0;
     };
 
+    // A point somebody wanted the others to look at, or where somebody went
+    // down. Fades on its own so nobody has to clean up after it.
+    struct WorldMarker
+    {
+        SVector3    position{};
+        std::string label;
+        uint8_t     peerId    = Net::kInvalidPeerId;
+        float       remaining = 0.f;
+    };
+
     struct AvatarSettings
     {
         bool  drawInWorld    = true;
@@ -36,6 +46,9 @@ namespace Coop::Game
         bool  drawDistance   = true;
         float maxDrawDistance = 250.f;   // metres; beyond this only the panel lists them
         float beamHeight      = 2.1f;
+
+        bool  drawMarkers     = true;
+        float markerSeconds   = 20.f;
     };
 
     // Turns the session's raw snapshots into something drawable, and draws it.
@@ -60,6 +73,12 @@ namespace Coop::Game
 
         void Draw3D() const;
 
+        // Markers are owned here because this is what already holds the
+        // renderer and the world-to-screen plumbing.
+        void AddMarker(const SVector3& position, const std::string& label, uint8_t peerId);
+        void TickMarkers(float deltaSeconds);
+        const std::vector<WorldMarker>& Markers() const { return m_markers; }
+
         const std::vector<AvatarView>& Views() const { return m_views; }
 
         // Names arrive from the network, so they are untrusted input on their
@@ -68,7 +87,10 @@ namespace Coop::Game
         static std::string SanitiseForDisplay(const std::string& text, size_t maxLength);
 
     private:
-        AvatarSettings          m_settings;
-        std::vector<AvatarView> m_views;
+        void DrawMarkers(const class DirectXRenderer& renderer) const;
+
+        AvatarSettings           m_settings;
+        std::vector<AvatarView>  m_views;
+        std::vector<WorldMarker> m_markers;
     };
 }

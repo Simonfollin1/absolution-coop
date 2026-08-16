@@ -182,6 +182,83 @@ namespace Coop::Game
             [](const AvatarView& a, const AvatarView& b) { return a.peerId < b.peerId; });
     }
 
+    void PeerAvatars::AddMarker(const SVector3& position, const std::string& label,
+                                uint8_t peerId)
+    {
+        // Bounded, because the key that produces these is on the other end of
+        // a network connection and nothing stops somebody leaning on it.
+        constexpr size_t kMaxMarkers = 24;
+
+        if (m_markers.size() >= kMaxMarkers)
+        {
+            m_markers.erase(m_markers.begin());
+        }
+
+        WorldMarker marker;
+
+        marker.position  = position;
+        marker.label     = SanitiseForDisplay(label, 40);
+        marker.peerId    = peerId;
+        marker.remaining = m_settings.markerSeconds;
+
+        m_markers.push_back(std::move(marker));
+    }
+
+    void PeerAvatars::TickMarkers(float deltaSeconds)
+    {
+        for (WorldMarker& marker : m_markers)
+        {
+            marker.remaining -= deltaSeconds;
+        }
+
+        m_markers.erase(
+            std::remove_if(m_markers.begin(), m_markers.end(),
+                [](const WorldMarker& marker) { return marker.remaining <= 0.f; }),
+            m_markers.end());
+    }
+
+    void PeerAvatars::DrawMarkers(const DirectXRenderer& renderer) const
+    {
+        auto& mutableRenderer = const_cast<DirectXRenderer&>(renderer);
+
+        for (const WorldMarker& marker : m_markers)
+        {
+            SVector4 colour = ColourForPeer(marker.peerId, false);
+
+            // Fade out over the last two seconds rather than vanishing.
+            if (marker.remaining < 2.f)
+            {
+                colour.w = std::clamp(marker.remaining / 2.f, 0.f, 1.f);
+            }
+
+            const SVector3 base(marker.position.x, marker.position.y, marker.position.z);
+            const SVector3 top(marker.position.x, marker.position.y, marker.position.z + 1.6f);
+
+            mutableRenderer.DrawLine3D(base, top, colour, colour);
+
+            // A small cross at the base, so it reads as a point on the ground
+            // rather than a line floating in space.
+            constexpr float kArm = 0.35f;
+
+            mutableRenderer.DrawLine3D(
+                SVector3(base.x - kArm, base.y, base.z),
+                SVector3(base.x + kArm, base.y, base.z), colour, colour);
+            mutableRenderer.DrawLine3D(
+                SVector3(base.x, base.y - kArm, base.z),
+                SVector3(base.x, base.y + kArm, base.z), colour, colour);
+
+            SVector2 screen{};
+
+            if (!marker.label.empty() &&
+                mutableRenderer.WorldToScreen(
+                    SVector3(top.x, top.y, top.z + 0.2f), screen))
+            {
+                mutableRenderer.DrawText2D(ZString(marker.label.c_str()),
+                                           screen, colour, 0.f, 0.45f);
+            }
+        }
+    }
+
     void PeerAvatars::Draw3D() const
     {
         if (!m_settings.drawInWorld)
@@ -194,6 +271,11 @@ namespace Coop::Game
         if (!renderer)
         {
             return;
+        }
+
+        if (m_settings.drawMarkers)
+        {
+            DrawMarkers(*renderer);
         }
 
         for (const AvatarView& view : m_views)

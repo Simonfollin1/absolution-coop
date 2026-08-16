@@ -14,6 +14,7 @@
 #include "Game/PeerAvatars.h"
 #include "Game/DownedState.h"
 #include "Game/Spectator.h"
+#include "Game/ConfigVars.h"
 
 // Absolution Co-op.
 //
@@ -52,6 +53,7 @@ private:
     void RenderPlayersTab();
     void RenderRulesTab();
     void RenderDiagnosticsTab();
+    void RenderEngineTab();
     void RenderHudOverlay();
 
     void AddLogLine(const std::string& line);
@@ -63,6 +65,7 @@ private:
     Coop::Game::Progression m_progression;
     Coop::Game::PeerAvatars m_avatars;
     Coop::Game::Spectator   m_spectator;
+    Coop::Game::ConfigVars  m_configVars;
 
     // UI state
     bool m_isOpen      = false;
@@ -73,6 +76,7 @@ private:
     char m_password[32]    = "";
     int  m_hostPort        = 47474;
     char m_chatInput[160]  = "";
+    char m_configFilter[64] = "";
 
     std::deque<std::string> m_log;
 
@@ -86,8 +90,20 @@ private:
 
     ZInputAction m_toggleAction;
     ZInputAction m_followAction;
-    bool         m_prevToggle = false;
-    bool         m_prevFollow = false;
+    ZInputAction m_markerAction;
+
+    // Orbit controls for the spectator camera. A player who is down should be
+    // able to look around rather than stare at one fixed angle.
+    ZInputAction m_specLeft;
+    ZInputAction m_specRight;
+    ZInputAction m_specUp;
+    ZInputAction m_specDown;
+    ZInputAction m_specCloser;
+    ZInputAction m_specFurther;
+
+    bool m_prevToggle = false;
+    bool m_prevFollow = false;
+    bool m_prevMarker = false;
 };
 
 DECLARE_MOD(CoopMod)

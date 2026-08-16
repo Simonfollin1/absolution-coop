@@ -92,6 +92,14 @@ void CoopMod::OnEngineInitialized()
 
     m_toggleAction = ZInputAction("CoopToggle");
     m_followAction = ZInputAction("CoopFollow");
+    m_markerAction = ZInputAction("CoopMarker");
+
+    m_specLeft    = ZInputAction("CoopSpectateLeft");
+    m_specRight   = ZInputAction("CoopSpectateRight");
+    m_specUp      = ZInputAction("CoopSpectateUp");
+    m_specDown    = ZInputAction("CoopSpectateDown");
+    m_specCloser  = ZInputAction("CoopSpectateCloser");
+    m_specFurther = ZInputAction("CoopSpectateFurther");
 
     m_session.SetBuildFingerprint(Game::BuildInfo::Get().Fingerprint());
 
@@ -150,6 +158,10 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
     UpdateSceneTransition();
     UpdateDownedFlow(deltaSeconds);
 
+    // Markers fade on their own clock, and should keep fading after a session
+    // ends rather than hanging in the world.
+    m_avatars.TickMarkers(deltaSeconds);
+
     if (!m_session.IsActive())
     {
         return;
@@ -168,6 +180,48 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
                                   localEvent))
     {
         m_session.SendEvent(localEvent);
+    }
+
+    // A marker is placed where the player is standing. Placing it wherever
+    // they are looking would be better and needs a raycast; this needs
+    // nothing, and "come here" is most of what anyone uses a ping for.
+    const bool markerDown = m_markerAction.Digital();
+
+    if (markerDown && !m_prevMarker && m_probe.HasPlayer())
+    {
+        const float4& position = m_probe.PlayerPosition();
+
+        Net::EventMessage marker;
+        marker.type = Net::EventType::Marker;
+        marker.x    = position.x;
+        marker.y    = position.y;
+        marker.z    = position.z;
+        marker.text = "marked";
+
+        m_session.SendEvent(marker);
+
+        // Shown locally straight away rather than waiting for it to come back.
+        m_avatars.AddMarker(SVector3(position.x, position.y, position.z),
+                            "you", m_session.Status().localPeerId);
+    }
+
+    m_prevMarker = markerDown;
+
+    // Anyone who died in the local world. Each client only ever reports its
+    // own, which is the only honest thing it can do when the worlds are not
+    // shared.
+    for (const Game::ActorDeath& death : m_probe.DrainDeaths())
+    {
+        Net::EventMessage event;
+        event.type = Net::EventType::ActorDied;
+        event.x    = death.position.x;
+        event.y    = death.position.y;
+        event.z    = death.position.z;
+        event.text = death.name;
+
+        m_session.SendEvent(event);
+
+        AddLogLine(std::format("{} down", Game::PeerAvatars::SanitiseForDisplay(death.name, 40)));
     }
 
     const bool followDown = m_followAction.Digital();
@@ -227,6 +281,17 @@ void CoopMod::PumpEvents()
         if (event.type == Net::EventType::CheckpointReached)
         {
             Game::TheDownedState().ReviveOnCheckpoint();
+        }
+
+        if (event.type == Net::EventType::Marker)
+        {
+            m_avatars.AddMarker(SVector3(event.x, event.y, event.z), name, event.originPeerId);
+        }
+        else if (event.type == Net::EventType::ActorDied)
+        {
+            m_avatars.AddMarker(SVector3(event.x, event.y, event.z),
+                                Game::PeerAvatars::SanitiseForDisplay(event.text, 40),
+                                event.originPeerId);
         }
 
         AddLogLine(DescribeEvent(event));
@@ -307,6 +372,26 @@ void CoopMod::UpdateDownedFlow(float deltaSeconds)
                 target = view.position;
                 break;
             }
+        }
+
+        // Orbit, so a downed player can watch rather than stare.
+        constexpr float kTurnPerSecond = 1.8f;
+        constexpr float kZoomPerSecond = 6.f;
+
+        float yawDelta      = 0.f;
+        float pitchDelta    = 0.f;
+        float distanceDelta = 0.f;
+
+        if (m_specLeft.Digital())    yawDelta      -= kTurnPerSecond * deltaSeconds;
+        if (m_specRight.Digital())   yawDelta      += kTurnPerSecond * deltaSeconds;
+        if (m_specUp.Digital())      pitchDelta    += kTurnPerSecond * deltaSeconds;
+        if (m_specDown.Digital())    pitchDelta    -= kTurnPerSecond * deltaSeconds;
+        if (m_specCloser.Digital())  distanceDelta -= kZoomPerSecond * deltaSeconds;
+        if (m_specFurther.Digital()) distanceDelta += kZoomPerSecond * deltaSeconds;
+
+        if (yawDelta != 0.f || pitchDelta != 0.f || distanceDelta != 0.f)
+        {
+            m_spectator.Nudge(yawDelta, pitchDelta, distanceDelta);
         }
 
         m_spectator.Update(deltaSeconds, target, true);
@@ -454,6 +539,12 @@ void CoopMod::RenderWindow()
         if (ImGui::BeginTabItem("Rules"))
         {
             RenderRulesTab();
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Engine"))
+        {
+            RenderEngineTab();
             ImGui::EndTabItem();
         }
 
@@ -688,6 +779,71 @@ void CoopMod::RenderRulesTab()
         ImGui::TextDisabled("Every hit costs the same: the real figure lives behind");
         ImGui::TextDisabled("SHitInfo::GetBaseDamage, which has no known address yet.");
     }
+}
+
+void CoopMod::RenderEngineTab()
+{
+    ImGui::TextWrapped(
+        "Every configuration variable the engine has registered, read straight "
+        "off ZConfigCommand's list. No offsets and no hooks, so this works the "
+        "same on Steam and GOG.");
+
+    ImGui::Spacing();
+
+    if (ImGui::Button("Read them", ImVec2(150.f, 0.f)))
+    {
+        m_configVars.Refresh();
+        AddLogLine(m_configVars.Diagnostic());
+    }
+
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", m_configVars.Diagnostic().c_str());
+
+    if (!m_configVars.Walked())
+    {
+        return;
+    }
+
+    ImGui::Spacing();
+    ImGui::InputText("Filter", m_configFilter, sizeof(m_configFilter));
+
+    const std::vector<const Game::ConfigVar*> matches = m_configVars.Find(m_configFilter);
+
+    ImGui::TextDisabled("%zu of %zu", matches.size(), m_configVars.All().size());
+
+    if (ImGui::BeginChild("cvars", ImVec2(0.f, 260.f), true))
+    {
+        if (ImGui::BeginTable("cvartable", 3,
+                ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY))
+        {
+            ImGui::TableSetupColumn("Name");
+            ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 70.f);
+            ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthFixed, 110.f);
+            ImGui::TableHeadersRow();
+
+            for (const Game::ConfigVar* entry : matches)
+            {
+                ImGui::TableNextRow();
+
+                ImGui::TableNextColumn();
+                ImGui::Text("%s", entry->name.c_str());
+
+                ImGui::TableNextColumn();
+                ImGui::TextDisabled("%s",
+                    entry->type == Game::ConfigVarType::Float  ? "float"
+                  : entry->type == Game::ConfigVarType::Int    ? "int"
+                  : entry->type == Game::ConfigVarType::String ? "string"
+                                                               : "?");
+
+                ImGui::TableNextColumn();
+                ImGui::Text("%s", entry->ValueText().c_str());
+            }
+
+            ImGui::EndTable();
+        }
+    }
+
+    ImGui::EndChild();
 }
 
 void CoopMod::RenderDiagnosticsTab()
