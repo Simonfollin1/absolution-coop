@@ -65,6 +65,8 @@ Both are plain text. Send them as they are.
 
 - [BUILDING.md](docs/BUILDING.md) for building from source
 - [RE-NOTES.md](docs/RE-NOTES.md) for engine findings and reverse engineering
+- [PROJECT.md](docs/PROJECT.md) for what the mod does, what is proven, and what
+  is still open
 
 ## Credits
 
