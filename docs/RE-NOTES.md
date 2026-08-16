@@ -369,24 +369,79 @@ so the call sites look like `call dword ptr [reg + 0x14]` against an
 `IBaseCharacter`. Finding those is a search over code rather than over the
 call graph.
 
-### Locomotion: the way in is `FUN_007b0d20`
+### Locomotion: the network is `FUN_004041e0`
 
-Found by counting which functions reference the morpheme node-path strings:
+**A correction.** This section previously said `FUN_007b0d20` was
+`ZHM5LocomotionNetwork::Init`, on the grounds that it was large and referenced
+six node paths. Decompiling it shows that was wrong. It is a one-time
+initialiser, guarded by `if (DAT_010397bc == -1)`, that registers every
+morpheme node *name* and stores the resulting ids in globals. Size and string
+count were not enough to identify it, and should not have been treated as if
+they were.
 
-| Function | Size | Node-path strings referenced |
+It was still worth decompiling, because it gave three things:
+
+- **`FUN_00882430` is the node-path lookup.** It takes a string and returns an
+  id, which is what `ZHM5LocomotionNetwork::GetNodeID` needs.
+- **The resolved ids live in static globals**, from `DAT_010397bc` upwards, one
+  per named node. A mod can read them directly without calling anything.
+- **`ZString`'s memory layout**, visible in the calls: `{0x8000000d,
+  "EmotionStates"}` is thirteen characters with `0x80000000` set, so the shape
+  is `{ size | 0x80000000, const char* }`. Useful for anything that has to
+  build one by hand.
+
+The network itself was found a different way: by asking who constructs the
+locomotion states, which do carry RTTI even though the network does not.
+
+| State | Constructed by | Size |
 |---|---|---|
-| **`FUN_007b0d20`** | 8340 bytes | 6 |
-| `FUN_006dc350` | 1229 bytes | 2 |
-| `FUN_007d18a0` | 1497 bytes | 2 |
+| `ZHM5LocomotionRootState` | `FUN_0062b0b0` | 18 |
+| `ZHM5LocomotionMoveRootState` | `FUN_00421360` | 80 |
+| `ZHM5LocomotionStandRootState` | `FUN_007099a0` | 43 |
+| `ZHM5LocomotionStrafeRootState` | **`FUN_004041e0`** | 606 |
+| `ZHM5LocomotionStrafeStandState` | **`FUN_004041e0`** | 606 |
 
-Eight kilobytes referencing six different node paths is the shape of
-`ZHM5LocomotionNetwork::Init`, which builds eighteen states and resolves each
-one's node id from its path. The rest of the class is reachable from there by
-following what operates on the same `this`.
+The small ones are each state's own constructor. `FUN_004041e0` builds *two
+different states*, and at 606 bytes has room for the rest, which is what an
+owner constructing its members looks like. **`FUN_004041e0` is
+`ZHM5LocomotionNetwork`'s constructor**, and the eighteen `ZHM5LocomotionState`
+members laid out in the development build's header are what it is filling in.
 
-This is the entry point to the animation system, and it was unknown before.
-It is what section 3.3 needs, and so it is what stands between a remote player
-being a marker and being a character that walks.
+From there: `SendRequest`, `SetControlParameter` and `Update` are methods on
+the same object, so they are reachable by finding what else takes that `this`.
+
+### Other vtables worth having
+
+| Class | vtable | Constructed by |
+|---|---|---|
+| `ZCharacterController` | `00f26ddc`, `00e98d44` | `FUN_00b8a370` (720), `FUN_00b8a640` (118) |
+| `ZMorphemeEntity` | `00ee9dc4`, `00ea41ec`, `00ea3a58` | `FUN_0062b340` (260), `FUN_007d6f10` (338) |
+| `ZMonitorHitmanLocomotionStateEntity` | `00ec9bf4` | `FUN_00598b00`, `FUN_00678010` |
+| `ZCompiledBehaviorTreeResourceInstaller` | `00ec5264` | `FUN_0090f7e0`, `FUN_004be1a0` |
+
+`ZMonitorHitmanLocomotionStateEntity` is an ordinary entity: sixteen slots with
+the `IComponentInterface` fingerprint at 2 and 3. If it can be found in a scene
+it may be a cheaper way to read locomotion state than the network is.
+
+### The damage figure: closed, not open
+
+`FUN_00707230` is not a damage accessor. Decompiled it is an array grow and
+insert: element size, begin/end/capacity pointers, growth by a quarter, a
+placement-construction loop. It is a `std::vector` operation that happened to
+be called nearby.
+
+So the only remaining route to the real damage figure is finding the indirect
+call sites, `call dword ptr [reg + 0x14]` against an `IBaseCharacter`. Until
+somebody does that, the flat cost per hit stands and the UI says so.
+
+### Console variables: the anchor did not work
+
+Searching for functions referencing `ai_BehaviorTreeEvaluationsPerFrame`,
+`morpheme_DisableAnimation` and three others returned nothing at all. The name
+strings are almost certainly pushed as immediate operands that Ghidra did not
+turn into data references. Enumerating the variables at runtime through
+`ZConfigCommand::First`, which the mod already does, is the better route
+anyway.
 
 ### The fingerprint this produced
 
