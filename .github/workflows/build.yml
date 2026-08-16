@@ -6,12 +6,27 @@ on:
     tags: ["v*.*.*"]
   pull_request:
 
+env:
+  # MSVC 14.40 (VS 2022 17.10) made std::mutex's constructor constexpr, and a
+  # binary built with it reads a null pointer inside std::mutex::lock when it
+  # runs against a Visual C++ redistributable older than 14.40. Plenty of
+  # machines still carry the 2015 one.
+  #
+  # This matters more here than it looks: the co-op mod owns a std::thread and
+  # several std::mutex, and DirectXTK takes one behind everything the SDK
+  # draws. The failure lands deep inside someone else's code with nothing of
+  # ours on the stack, so it is not a thing to leave to a player to diagnose.
+  #
+  # cl.exe reads CL for extra options, which is how this reaches vcpkg's own
+  # compilation of DirectXTK as well as our targets - a CMake flag would not.
+  CL: /D_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR
+
 jobs:
   build:
     runs-on: windows-2022
 
     steps:
-      - name: Checkout SpeedrunToolkit
+      - name: Checkout mods
         uses: actions/checkout@v4
         with:
           path: mod
@@ -19,16 +34,31 @@ jobs:
       - name: Clone HitmanAbsolutionSDK
         run: git clone --depth 1 --recurse-submodules https://github.com/pavledev/HitmanAbsolutionSDK.git sdk
 
-      - name: Place mod into SDK
+      # The clone tracks master, so "the SDK" is a moving target. Recording
+      # which commit these DLLs were built against is what makes a bug report
+      # about them answerable.
+      - name: Record SDK revision
         shell: pwsh
-        run: Copy-Item -Recurse mod sdk/Mods/SpeedrunToolkit
+        run: |
+          $sha = (git -C sdk rev-parse HEAD).Trim()
+          Write-Host "SDK commit: $sha"
+          "SDK_COMMIT=$sha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Add SpeedrunToolkit to SDK MODS list
+      - name: Place mods into SDK
+        shell: pwsh
+        run: |
+          # SpeedrunToolkit is the repository root; Coop is its own folder.
+          Copy-Item -Recurse mod sdk/Mods/SpeedrunToolkit
+          Copy-Item -Recurse mod/coop sdk/Mods/Coop
+
+      - name: Add mods to SDK MODS list
         shell: pwsh
         run: |
           $path = "sdk/CMakeLists.txt"
           $txt  = Get-Content $path -Raw
-          $txt  = $txt -replace '(set\(MODS\s*\r?\n)', "`$1    SpeedrunToolkit`n"
+          foreach ($m in @("SpeedrunToolkit", "Coop")) {
+            $txt = $txt -replace '(set\(MODS\s*\r?\n)', "`$1    $m`n"
+          }
           Set-Content $path $txt -NoNewline
 
       - name: Patch SDK Logger.cpp (missing chrono include for MSVC 19.44+)
@@ -47,84 +77,143 @@ jobs:
           git clone --depth 1 https://github.com/microsoft/vcpkg.git sdk/vcpkg
           .\sdk\vcpkg\bootstrap-vcpkg.bat -disableMetrics
 
+      # /MAP makes the linker emit a symbol map next to every DLL. Crash reports
+      # from players are raw "module+0xRVA" offsets, and without a map there is
+      # no way to turn one back into a function name.
       - name: Configure CMake (x86 / Win32)
         shell: pwsh
         run: |
           cmake -S sdk -B build `
             -G "Visual Studio 17 2022" -A Win32 `
             -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/sdk/vcpkg/scripts/buildsystems/vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET=x86-windows
+            -DVCPKG_TARGET_TRIPLET=x86-windows `
+            -DCMAKE_SHARED_LINKER_FLAGS="/MAP /MAPINFO:EXPORTS"
 
-      # Build the proxy loader (becomes dinput8.dll) and our mod.
-      - name: Build DirectInputProxy + SpeedrunToolkit
-        run: cmake --build build --config Release --target DirectInputProxy SpeedrunToolkit
+      - name: Build proxy loader, SDK and mods
+        run: cmake --build build --config Release --target DirectInputProxy HitmanAbsolutionSDK SpeedrunToolkit Coop
 
-      # ---- Package everything the user needs ----
+      # ---- Package ----------------------------------------------------------
+      #
+      # Three things the previous version of this workflow got wrong, all of
+      # which meant the archive it produced could not work at all:
+      #
+      #   1. mods.ini was written to mods\. ModManager::LoadAllMods reads it
+      #      from the process working directory - the game root - so it was
+      #      never found and no mod was ever loaded.
+      #   2. mods.ini was a plain list of names. LoadAllMods walks the ini's
+      #      *sections*, so a mod has to appear as [Name].
+      #   3. Only dinput8.dll and the mod were shipped. The loader needs
+      #      HitmanAbsolutionSDK.dll and its own dependencies, none of which
+      #      were in the archive.
 
-      - name: Assemble release package
+      - name: Assemble package
         shell: pwsh
         run: |
           $pkg = "package"
           New-Item -ItemType Directory -Force $pkg | Out-Null
           New-Item -ItemType Directory -Force "$pkg/mods" | Out-Null
 
-          # dinput8.dll — the proxy loader built from DirectInputProxy.
-          # The SDK's CMakeLists names the output dinput8.dll.
-          $proxy = Get-ChildItem -Recurse -Filter "dinput8.dll" build | Select-Object -First 1
-          if (-not $proxy) {
-            # Fallback: find by project name if output name differs.
-            $proxy = Get-ChildItem -Recurse -Filter "DirectInputProxy.dll" build | Select-Object -First 1
-            if ($proxy) { Copy-Item $proxy.FullName "$pkg/dinput8.dll" }
-          } else {
-            Copy-Item $proxy.FullName "$pkg/dinput8.dll"
+          function CopyBuilt($pattern, $destination, $required) {
+            $file = Get-ChildItem -Recurse -Filter $pattern build -ErrorAction SilentlyContinue |
+                    Select-Object -First 1
+            if (-not $file) {
+              if ($required) { throw "$pattern not found in build output" }
+              Write-Host "optional: $pattern not present, skipping"
+              return
+            }
+            Copy-Item $file.FullName $destination
+            Write-Host "packaged $($file.Name)"
           }
 
-          # dinput8_original.dll — the real Windows DirectInput DLL (32-bit).
-          # SysWOW64 holds 32-bit DLLs on 64-bit Windows.
+          # The proxy loader. The SDK names its output dinput8.dll; fall back to
+          # the project name in case that changes upstream.
+          $proxy = Get-ChildItem -Recurse -Filter "dinput8.dll" build -ErrorAction SilentlyContinue |
+                   Select-Object -First 1
+          if ($proxy) {
+            Copy-Item $proxy.FullName "$pkg/dinput8.dll"
+          } else {
+            CopyBuilt "DirectInputProxy.dll" "$pkg/dinput8.dll" $true
+          }
+
+          # The real DirectInput, which the proxy forwards everything to.
           Copy-Item "C:\Windows\SysWOW64\dinput8.dll" "$pkg/dinput8_original.dll"
 
-          # SpeedrunToolkit.dll
-          $mod = Get-ChildItem -Recurse -Filter "SpeedrunToolkit.dll" build | Select-Object -First 1
-          Copy-Item $mod.FullName "$pkg/mods/SpeedrunToolkit.dll"
+          # The loader itself, and what it links against.
+          CopyBuilt "HitmanAbsolutionSDK.dll" "$pkg/" $true
+          CopyBuilt "DirectXTK.dll"           "$pkg/" $false
+          CopyBuilt "minhook.x32.dll"         "$pkg/" $false
 
-          # mods.ini — tells the loader which mods to enable.
-          Set-Content "$pkg/mods/mods.ini" "SpeedrunToolkit"
+          # vcpkg leaves shared dependencies in its own bin directory rather
+          # than in the build tree.
+          $vcpkgBin = "build/vcpkg_installed/x86-windows/bin"
+          if (Test-Path $vcpkgBin) {
+            Get-ChildItem "$vcpkgBin/*.dll" | ForEach-Object {
+              if (-not (Test-Path "$pkg/$($_.Name)")) {
+                Copy-Item $_.FullName "$pkg/"
+                Write-Host "packaged $($_.Name) from vcpkg"
+              }
+            }
+          }
 
-          # List what we packaged.
-          Get-ChildItem -Recurse $pkg
+          # The mods.
+          CopyBuilt "SpeedrunToolkit.dll" "$pkg/mods/" $true
+          CopyBuilt "Coop.dll"            "$pkg/mods/" $true
+
+          Copy-Item "mod/coop/Coop.ini" "$pkg/mods/Coop.ini"
+
+          # Fonts and icons the overlay draws with, plus the property and enum
+          # registries. HashMap.txt is deliberately left out - it is 200k
+          # resource names, the SDK handles its absence, and it doubles the
+          # download.
+          if (Test-Path "sdk/assets") {
+            New-Item -ItemType Directory -Force "$pkg/assets" | Out-Null
+            Copy-Item -Recurse "sdk/assets/*" "$pkg/assets/" -Exclude "HashMap.txt"
+          }
+
+          # mods.ini: game root, one ini section per mod. LoadAllMods loads
+          # only the sections whose DLL is actually present in mods\ and skips
+          # the rest silently, so naming both is free.
+          Set-Content "$pkg/mods.ini" "[SpeedrunToolkit]`n[Coop]`n" -NoNewline
+
+          Get-ChildItem -Recurse $pkg | Select-Object FullName
 
       - name: Zip package
         shell: pwsh
-        run: Compress-Archive -Path package/* -DestinationPath SpeedrunToolkit.zip
+        run: Compress-Archive -Path package/* -DestinationPath AbsolutionCoop.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SpeedrunToolkit-${{ github.sha }}
-          path: SpeedrunToolkit.zip
+          name: AbsolutionCoop-${{ github.sha }}
+          path: AbsolutionCoop.zip
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: SpeedrunToolkit.zip
+          files: AbsolutionCoop.zip
           body: |
-            ## Installation — extrahera och spela
+            ## Installation
 
-            1. Ladda ner `SpeedrunToolkit.zip` nedan.
-            2. Hitta Hitman Absolutions spelkatalog i Steam:
-               högerklicka på spelet → Hantera → Bläddra bland lokala filer.
-            3. Extrahera **innehållet** i zip-filen direkt till spelkatalogen
-               (inte zip-filen i sig — innehållet).
+            1. Ladda ner `AbsolutionCoop.zip` nedan.
+            2. Hitta mappen där `HMA.exe` ligger.
+               Steam: högerklicka spelet → Hantera → Bläddra bland lokala filer.
+               GOG: `...\Hitman Absolution\retail\`
+            3. Extrahera **innehållet** i zip-filen direkt dit, så att
+               `dinput8.dll` och `mods.ini` hamnar bredvid `HMA.exe`.
+            4. Starta spelet. `~` öppnar SDK-panelen, `F6` öppnar co-op.
 
-            Klart. Starta spelet, tryck **`~`** för att öppna SDK-panelen,
-            sedan **`L`** för Speedrun Toolkit.
+            ## Co-op
 
-            ---
-            Paketet innehåller:
-            - `dinput8.dll` — mod-loadern
-            - `dinput8_original.dll` — originalt DirectInput (32-bit Windows)
-            - `mods/SpeedrunToolkit.dll` — Speedrun Toolkit
-            - `mods/mods.ini` — konfiguration
+            Alla kör sin egen kopia av nivån. En är värd — bara den behöver en
+            nåbar UDP-port. Öppna panelen, sätt namn och port, tryck Host; de
+            andra skriver in värdens adress och trycker Join.
 
-            Se [INSTALL.md](INSTALL.md) för fullständig guide och tangentbordslayout.
+            NPC:er, kroppar, dörrar och larm är lokala för varje spelare. Två
+            personer i samma rum ser samma nivå och olika vakter. Det är en
+            följd av att motorn inte är deterministisk, inte en bugg.
+
+            Byggd mot HitmanAbsolutionSDK `${{ env.SDK_COMMIT }}`.
+
+            Kräver Hitman: Absolution 1.0.447.0 och 32-bitars Visual C++
+            2015–2022 redistributable. Använd inte i Contracts.
