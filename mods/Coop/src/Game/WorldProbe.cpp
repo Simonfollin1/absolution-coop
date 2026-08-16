@@ -10,7 +10,7 @@
 #include <Global.h>
 
 #include "Game/WorldProbe.h"
-#include "Game/BuildInfo.h"
+#include "Memory/GameOffsets.h"
 
 namespace Coop::Game
 {
@@ -31,12 +31,15 @@ namespace Coop::Game
         UpdatePlayer(updateEvent);
         UpdateActors();
 
-        const BuildInfo& build = BuildInfo::Get();
+        const int level   = GameOffsets::GetLevel();
+        const int section = GameOffsets::GetSection();
 
-        m_state.level   = build.CurrentLevel();
-        m_state.section = build.CurrentSection();
+        m_state.level   = (GameOffsets::IsSupported() && level   >= 0 && level   <= 25)
+                        ? static_cast<uint8_t>(level) : 0xFF;
+        m_state.section = (GameOffsets::IsSupported() && section >= 0 && section <= 254)
+                        ? static_cast<uint8_t>(section) : 0xFF;
 
-        if (build.IsLoading())
+        if (GameOffsets::IsLoading())
         {
             m_state.flags |= Net::SF_Loading;
         }
@@ -45,7 +48,7 @@ namespace Coop::Game
             m_state.flags &= static_cast<uint16_t>(~Net::SF_Loading);
         }
 
-        if (build.IsInMenu())
+        if (GameOffsets::IsInMenu())
         {
             m_state.flags |= Net::SF_InMenu;
         }

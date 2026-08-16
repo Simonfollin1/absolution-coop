@@ -1,0 +1,20 @@
+# macOS drops these into any folder Finder has displayed. Nothing stops one
+# reaching a package otherwise: the build copies mods/<name> wholesale into the
+# SDK tree, so a committed .DS_Store would end up in every archive a player
+# extracts into their game folder.
+.DS_Store
+._*
+__MACOSX/
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# Build output, if anyone ever builds locally
+build/
+out/
+*.user
+*.vcxproj*
+.vs/

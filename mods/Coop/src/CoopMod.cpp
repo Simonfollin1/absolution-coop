@@ -13,6 +13,7 @@
 
 #include "CoopMod.h"
 #include "Game/BuildInfo.h"
+#include "Memory/GameOffsets.h"
 
 using namespace Coop;
 
@@ -103,6 +104,9 @@ void CoopMod::OnEngineInitialized()
 
     m_session.SetBuildFingerprint(Game::BuildInfo::Get().Fingerprint());
 
+    m_loaded.Initialize("Co-op", 0);
+    m_cost.Configure("coop");
+
     AddLogLine(Game::BuildInfo::Get().Describe());
 
     if (!Game::BuildInfo::Get().OffsetsUsable())
@@ -139,6 +143,8 @@ std::string CoopMod::PeerName(uint8_t peerId) const
 
 void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
 {
+    const Diag::FrameCostScope costScope(m_cost);
+
     const bool toggleDown = m_toggleAction.Digital();
 
     if (toggleDown && !m_prevToggle)
@@ -332,6 +338,13 @@ void CoopMod::UpdateSceneTransition()
     const bool playerReplaced = hitman != m_lastPlayerEntity;
     const bool areaChanged    = level != m_lastLevel || section != m_lastSection;
 
+    if (playerReplaced || areaChanged)
+    {
+        // GameOffsets caches which pages it has probed, and a level change is
+        // exactly when those pages go back to the allocator.
+        GameOffsets::InvalidateProbeCache();
+    }
+
     if ((playerReplaced || areaChanged) && hitman)
     {
         // A new scene is a clean slate: back on your feet, camera back to the
@@ -455,6 +468,8 @@ void CoopMod::OnDraw3D()
 
 void CoopMod::OnDrawUI(const bool hasFocus)
 {
+    m_loaded.OnDrawUI(hasFocus);
+
     RenderHudOverlay();
 
     if (!m_isOpen || !hasFocus)
@@ -937,6 +952,11 @@ void CoopMod::RenderDiagnosticsTab()
                 static_cast<unsigned long long>(status.packetsSent),
                 static_cast<unsigned long long>(status.packetsReceived),
                 static_cast<unsigned long long>(status.packetsDropped));
+
+    ImGui::SeparatorText("Cost");
+    ImGui::Text("%s: last %.0f us, average %.0f us, worst %.0f us over %u frames",
+                m_cost.Label(), m_cost.LastMicros(), m_cost.AverageMicros(),
+                m_cost.WorstMicros(), m_cost.TotalFrames());
 
     ImGui::SeparatorText("Log");
 

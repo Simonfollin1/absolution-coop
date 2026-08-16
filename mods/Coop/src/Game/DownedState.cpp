@@ -218,21 +218,15 @@ namespace Coop::Game
             return false;
         }
 
-        const BuildInfo& build = BuildInfo::Get();
-
         // The vtable itself has to live inside the game's image. A pointer
         // that does not is a sign the cast above landed somewhere it should
         // not have, and writing through it would corrupt whatever is there.
-        if (build.ModuleBase() != 0 && build.SizeOfImage() != 0)
-        {
-            const auto address = reinterpret_cast<uintptr_t>(vtable);
+        const BuildInfo& build = BuildInfo::Get();
 
-            if (address < build.ModuleBase() ||
-                address >= build.ModuleBase() + build.SizeOfImage())
-            {
-                m_diagnostic = "player vtable is outside HMA.exe - not patching";
-                return false;
-            }
+        if (build.SizeOfImage() != 0 && !build.Contains(vtable))
+        {
+            m_diagnostic = "player vtable is outside HMA.exe - not patching";
+            return false;
         }
 
         // Every entry up to and including the one being replaced must be code.

@@ -9,7 +9,8 @@ building locally.
 ```bat
 git clone --recurse-submodules https://github.com/pavledev/HitmanAbsolutionSDK.git sdk
 git clone https://github.com/Simonfollin1/absolution-coop.git mod
-xcopy /E /I mod sdk\Mods\Coop
+xcopy /E /I mod\mods\Coop sdk\Mods\Coop
+xcopy /E /I mod\common   sdk\Mods\Coop\common
 ```
 
 Add `Coop` to the `MODS` list in `sdk/CMakeLists.txt`.
@@ -49,10 +50,12 @@ installs a detour, but that's worth knowing before you add one.
 ## Layout
 
 ```
-include/, src/
-  Net/           UDP protocol, socket, session. Star topology, host relays.
-  Game/          reads the engine, decides what to send and what to draw
-  CoopMod        the ModInterface, the lobby, the overlay
+common/          shared with the other mods in this set
+mods/Coop/
+  include/, src/
+    Net/         UDP protocol, socket, session. Star topology, host relays.
+    Game/        reads the engine, decides what to send and what to draw
+    CoopMod      the ModInterface, the lobby, the overlay
 docs/
   RE-NOTES.md    engine findings, addresses, and what's still unknown
   ghidra/        the scripts that produced them

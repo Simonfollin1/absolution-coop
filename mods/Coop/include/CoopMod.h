@@ -16,6 +16,9 @@
 #include "Game/Spectator.h"
 #include "Game/ConfigVars.h"
 
+#include "UI/LoadedMarker.h"
+#include "Diag/FrameCost.h"
+
 // Absolution Co-op.
 //
 // Everyone runs their own copy of the level; the mod replicates the players to
@@ -66,6 +69,12 @@ private:
     Coop::Game::PeerAvatars m_avatars;
     Coop::Game::Spectator   m_spectator;
     Coop::Game::ConfigVars  m_configVars;
+
+    // The same two every mod in this set carries: the line on the main menu
+    // that says what is installed, and a per-frame cost the log can answer
+    // "does this slow the game down" with.
+    LoadedMarker    m_loaded;
+    Diag::FrameCost m_cost;
 
     // UI state
     bool m_isOpen      = false;

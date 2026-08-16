@@ -56,9 +56,14 @@ jobs:
           Write-Host "SDK commit: $sha"
           "SDK_COMMIT=$sha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
+      # Each mod is a self-contained folder in the SDK's Mods tree, with the
+      # shared code copied in as <mod>/common, which is what its CMakeLists
+      # globs.
       - name: Place the mod into the SDK tree
         shell: pwsh
-        run: Copy-Item -Recurse mod sdk/Mods/Coop
+        run: |
+          Copy-Item -Recurse "mod/mods/Coop" "sdk/Mods/Coop"
+          Copy-Item -Recurse "mod/common"    "sdk/Mods/Coop/common"
 
       - name: Add Coop to the SDK MODS list
         shell: pwsh
@@ -201,7 +206,7 @@ jobs:
           }
 
           CopyBuilt "Coop.dll" "$pkg/mods/" $true
-          Copy-Item "mod/Coop.ini" "$pkg/mods/Coop.ini"
+          Copy-Item "mod/mods/Coop/Coop.ini" "$pkg/mods/Coop.ini"
 
           # Fonts and icons the overlay draws with, plus the property and enum
           # registries. HashMap.txt is left out deliberately: it is 200k
