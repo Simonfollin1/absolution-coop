@@ -273,6 +273,11 @@ CoopMod::~CoopMod()
     // before this DLL unloads - a patched entry pointing into unmapped memory
     // is a crash with no stack to explain it.
     m_session.Leave();
+
+    // Before the thread this is on goes away, and before the process can exit
+    // with a hole still open in the router.
+    m_portMapper.Release();
+
     m_spectator.Leave();
 
     // Before anything else: leaving the guards blind and deaf after the mod has
@@ -1675,13 +1680,66 @@ void CoopMod::RenderSessionTab()
             m_progression.ResetForNewSession();
             Game::TheDownedState().ResetForNewSession();
             AddLogLine(std::format("Hosting on UDP {}", m_hostPort));
+
+            // Ask the router to open it. Runs on its own thread - discovery
+            // waits seconds for a multicast reply - and hosting does not depend
+            // on it succeeding.
+            if (m_useUpnp)
+            {
+                m_portMapper.RequestMap(static_cast<uint16_t>(m_hostPort));
+            }
         }
     }
 
     ImGui::EndDisabled();
 
-    ImGui::TextDisabled("Only the host needs a reachable port. Forward UDP %d,", m_hostPort);
-    ImGui::TextDisabled("or put everyone on the same LAN or VPN.");
+    ImGui::Checkbox("Ask the router to open the port (UPnP)", &m_useUpnp);
+
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetTooltip(
+            "Most home routers will do this on request and have done for twenty\n"
+            "years. It saves the host finding the port forwarding page, getting\n"
+            "the protocol right - the field defaults to TCP and every byte here\n"
+            "is UDP - and undoing it afterwards.\n\n"
+            "It is closed again when you leave. If the router says no, nothing\n"
+            "is lost: hosting still works on a LAN or over a VPN.");
+    }
+
+    switch (m_portMapper.GetState())
+    {
+    case Net::PortMapper::State::Working:
+        ImGui::TextColored(ImVec4(1.f, 0.80f, 0.35f, 1.f), "%s",
+                           m_portMapper.Note().c_str());
+        break;
+
+    case Net::PortMapper::State::Mapped:
+        ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.f), "%s",
+                           m_portMapper.Note().c_str());
+        break;
+
+    case Net::PortMapper::State::Failed:
+        ImGui::TextColored(ImVec4(1.f, 0.55f, 0.45f, 1.f), "%s",
+                           m_portMapper.Note().c_str());
+        break;
+
+    default:
+        ImGui::TextDisabled("Only the host needs a reachable port. On the same LAN");
+        ImGui::TextDisabled("or a VPN, none of this matters.");
+        break;
+    }
+
+    // The one thing the other player actually has to be told.
+    const std::string external = m_portMapper.ExternalAddress();
+
+    if (!external.empty())
+    {
+        ImGui::Spacing();
+        ImGui::Text("Give them this:");
+        ImGui::SameLine();
+        ImGui::InputText("##external", const_cast<char*>(external.c_str()),
+                         external.size() + 1, ImGuiInputTextFlags_ReadOnly);
+    }
 
     ImGui::SeparatorText("Join");
     ImGui::InputText("Host address", m_hostAddress, sizeof(m_hostAddress));
@@ -1707,6 +1765,10 @@ void CoopMod::RenderSessionTab()
         if (ImGui::Button("Leave", ImVec2(180.f, 0.f)))
         {
             m_session.Leave();
+
+            // Closes the mapping again if one was made.
+            m_portMapper.Release();
+
             AddLogLine("Left the session");
         }
     }

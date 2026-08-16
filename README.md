@@ -37,12 +37,16 @@ it in Contracts.
 
 ## Playing together
 
-One player hosts, and **only the host needs a reachable UDP port**. Forward it,
-or put everyone on the same LAN or VPN. Everyone else just types the host's
-`address:port`.
+One player hosts, and **only the host needs a reachable UDP port**. Everyone
+else just types the host's `address:port`.
 
-There's no matchmaking or relay server, so you'll need to sort out port
-forwarding yourself. A VPN like ZeroTier or Radmin is the easy way around it.
+The host doesn't normally have to do anything about that port: pressing Host
+asks the router to open it over UPnP, and the panel then shows the exact
+address to hand to everyone else. It's closed again when you leave.
+
+If the router says no — some have UPnP switched off — forward UDP 47474 by
+hand, or put everyone on a VPN like ZeroTier or Radmin, which needs no router
+configuration at all. There's no matchmaking and no relay server.
 
 ## When something's wrong
 

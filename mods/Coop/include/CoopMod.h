@@ -11,6 +11,7 @@
 #include <ModInterface.h>
 
 #include "Net/Session.h"
+#include "Net/PortMapper.h"
 #include "Game/WorldProbe.h"
 #include "Game/Progression.h"
 #include "Game/PeerAvatars.h"
@@ -125,6 +126,7 @@ private:
     std::string PeerName(uint8_t peerId) const;
 
     Coop::Net::Session     m_session;
+    Coop::Net::PortMapper  m_portMapper;
     Coop::Game::WorldProbe m_probe;
     Coop::Game::Progression m_progression;
     Coop::Game::PeerAvatars m_avatars;
@@ -148,6 +150,8 @@ private:
     // UI state
     bool m_isOpen      = false;
     bool m_showOverlay = true;
+
+    bool m_useUpnp = true;
 
     char m_hostAddress[64] = "127.0.0.1:47474";
     char m_playerName[32]  = "Agent";
