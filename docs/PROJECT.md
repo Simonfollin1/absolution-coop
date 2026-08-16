@@ -170,12 +170,51 @@ game.
 
 ### 3.6 Following somebody into a mission
 
-`ZLevelManager::GetSceneParameters()` returns its `SSceneParameters` by
-**non-const** reference, and the first field is the scene resource. Everyone
-announces theirs every three seconds. If somebody is in a level you are not in,
-the panel offers to go.
+Everyone announces their scene every three seconds. If somebody is in a level
+you are not in, the panel offers to go.
 
-**This does not work yet.** It no longer crashes, and it does not load. See §7.
+The first two attempts wrote the host's scene path into `SSceneParameters` and
+called `CreateScene`, on the reasoning that this is the game's own transition
+path. It returned cleanly and nothing happened, on two machines. It was never
+going to: `SSceneParameters` is what the game **tells itself** it is doing — the
+level's name, the checkpoint, whether this is a restore — and it is not an input
+to the loader. `ZEntitySceneContext` takes its scene through `SetSceneResources`
+and `CreateScene` only instantiates what is already set. Writing the path and
+asking for a scene put a label on an empty box.
+
+A level is three resources, and the URIs follow a fixed shape:
+
+| | |
+|---|---|
+| factory | `[<scene>].pc_entitytemplate` |
+| blueprint | `[<scene>].pc_entityblueprint` |
+| header library | `[[assembly:/common/pc.layoutconfig].pc_layoutdef](<scene>).pc_headerlib` |
+
+Their runtime IDs were in `assets/HashMap.txt` — the 28 MB hash table that ships
+with the SDK, which the build omits precisely because nothing looked anything up
+in it. Twenty-one levels, sixty-three IDs, and they do not change, so
+`SceneTable` carries them outright: nothing is hashed at runtime and the file
+still stays out of the build. A scene that is not in the table is refused, since
+the failure mode of guessing is tearing the world down and building nothing.
+
+The load spans frames. Resources stream in asynchronously, so `Begin` puts the
+three requests in, `Update` watches them, and the player keeps a working game
+for the seconds in between. Only when all three are in memory does `CoopMod`
+release what it is holding into the old world — the patched vtable entry on the
+player, the spectator camera — and commit: `ClearScene(true)`,
+`SetSceneResources`, `CreateScene("")`. Every step is logged **before** it runs,
+so a crash names the call that caused it.
+
+`StartEntities` is deliberately left to the engine, which starts a scene when it
+is whole rather than when it is asked. If the level comes up and nothing in it
+moves, that is the line to revisit.
+
+One near miss worth keeping: `ZResourcePtr` declares a copy constructor and a
+destructor and **no assignment operator**, so the generated one copies the stub
+pointer without taking a reference — and then the source releases on its way
+out. Assigning the three resources would have left the mod holding pointers it
+did not own and releasing references it never took. They are constructed, not
+assigned.
 
 ---
 
@@ -267,6 +306,11 @@ after it failed.
   the game is what proved it.
 - **`CreateScene` does not load anything.** `SetSceneResources` sits beside it
   in the same interface; `CreateScene` only instantiates what is already set.
+  This one cost the most: two rounds of in-game testing, a crash on somebody
+  else's machine, and three Ghidra scripts hunting for a loader that was never
+  missing. The whole answer was in the SDK header the mod already includes, and
+  the resource IDs were in a file that ships with the SDK. Reading `.h` before
+  writing `.cpp` would have skipped all of it.
 - **`SHitInfo`'s published layout is for the 2012 development build.** Retail is
   shifted back by `0x10`. The mod was reading the hit normal and calling it a
   position.
@@ -320,11 +364,12 @@ there is then nothing to shoot.
 
 Ranked by what unlocks the most.
 
-**1. Loading a level.** The only thing standing between this and two people
-actually playing together. `CreateScene` is not enough; something reads the
-scene name, loads the resource, hands it to `SetSceneResources` and then creates
-the scene. `docs/ghidra/HmaSceneLoad.java` looks for it by finding who calls
-`CreateScene`, `ClearScene` and `ResetSceneCallback` together.
+**1. Loading a level — written, not yet confirmed in the game.** The chain is
+resources first, scene second, and §3.6 has it. What one run will settle: that
+the three resources report ready, that `ClearScene(true)` from a frame-update
+callback is a safe point, and that the engine starts the scene without being
+asked. All three are answered by `Coop.log` alone; the failure mode of each is a
+different last line.
 
 **2. Mirroring the engine's health instead of shadowing it.** The offsets are
 known and read every frame. Letting the engine take the damage, reading what it

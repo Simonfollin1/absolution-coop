@@ -894,6 +894,88 @@ Try the property first. It costs an evening and might answer the whole thing.
 
 ---
 
+## 3.5 Loading a level — closed, and not by disassembly
+
+Three Ghidra scripts went looking for a level loader. The first asked for
+callers of `CreateScene` at `0x004479e0` and got a destructor, because Ghidra
+has no function at that address and returns whatever surrounds it. The second
+asked for references to `0x01221314`, the scene path inside `SSceneParameters`,
+and got none — the wrong question, since `ZLevelManager` is a static object at
+`0x01221310` and a compiler reaches a field through the object's base in a
+register, never by absolute address. Every reference is on the base.
+
+There was no loader to find. `ZEntitySceneContext`, in the SDK header the mod
+already includes:
+
+```cpp
+virtual void ClearScene(bool bFullyUnloadScene) = 0;
+virtual void PrepareNewScene() = 0;
+virtual void CreateScene() = 0;
+virtual void CreateScene(const ZString& sStreamingState) = 0;
+virtual void SetSceneResources(TResourcePtr<IEntityFactory>,
+                               TResourcePtr<IEntityBlueprintFactory>,
+                               ZResourcePtr) = 0;
+```
+
+No method on the class takes a path. `CreateScene` instantiates what
+`SetSceneResources` was already given. `SSceneParameters.sSceneResource` is
+state, not an argument.
+
+### The three resources, and where their IDs came from
+
+`assets/HashMap.txt` ships with the SDK: 28 MB of `<runtime id> <resource uri>`,
+one line per resource in the game. The scene entries are these three shapes:
+
+```
+800007A7A45DBE71  [assembly:/scenes/l01/l01_main.entity].pc_entitytemplate
+800001F893D61C2A  [assembly:/scenes/l01/l01_main.entity].pc_entityblueprint
+00985D5C975B2115  [[assembly:/common/pc.layoutconfig].pc_layoutdef](assembly:/scenes/l01/l01_main.entity).pc_headerlib
+```
+
+Which map one-to-one onto `SetSceneResources`' three arguments, in that order.
+Twenty-one levels have all three — `l01`, `l01b`, `l02b`–`l02d`, `l03`,
+`l04b`–`l04e`, `l05a`–`l05c`, `l06a`, `l06d`, `l07a`, `l08a`, `l08b`, `l09`,
+`l10`, `menu`. `benchmark` has a header library and no factory or blueprint, so
+it cannot be built this way.
+
+The whole table is in `mods/Coop/src/Game/SceneTable.cpp`. Sixty-three constants
+beat a 28 MB file and a runtime hash, and the IDs are the game's own rather than
+something recomputed.
+
+### What the runtime IDs are
+
+`ZRuntimeResourceID::QueryRuntimeResourceID` looks the URI up in the registry
+and, failing that, falls back to `Hash::GetMD5(lowercase(uri))`. Note the top
+bit: `8000...` on the entity resources, `0000...` on the header library. That is
+`IsLibraryResource`, not part of the hash — which is why recomputing an ID from
+a URI is not as simple as hashing it, and another reason the table is literal.
+
+### The sequence
+
+```cpp
+ZResourcePtr f = ResourceManager->GetResourcePtr(ZRuntimeResourceID(factoryId),   0);
+ZResourcePtr b = ResourceManager->GetResourcePtr(ZRuntimeResourceID(blueprintId), 0);
+ZResourcePtr h = ResourceManager->GetResourcePtr(ZRuntimeResourceID(headerLibId), 0);
+
+// ... wait for IsReady() on all three, across frames ...
+
+context->ClearScene(true);
+context->SetSceneResources(TResourcePtr<IEntityFactory>(f),
+                           TResourcePtr<IEntityBlueprintFactory>(b), h);
+context->CreateScene(ZString(""));
+```
+
+`GetResourcePtr` returns immediately with a stub that is not yet valid, so the
+wait is mandatory. Priority 0 is what the game's own transitions use.
+
+**`ZResourcePtr` has a copy constructor, a destructor and no assignment
+operator.** The generated assignment copies `m_pResourceStub` and takes no
+reference, and then the source releases on its way out — so assigning one leaves
+you holding a pointer you do not own and releasing a reference you never took.
+Construct them; never assign them. Same family of trap as `ZString`.
+
+---
+
 ## 4. Method, and its one rule
 
 The development build (2012-12-18) ships complete private PDBs for every
