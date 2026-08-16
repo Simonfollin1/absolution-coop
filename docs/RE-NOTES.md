@@ -309,7 +309,67 @@ print("applied %d symbols" % applied)
 
 ---
 
-## 2. The one question that would settle a shipped feature
+## 2. Answered: `YouGotHit` is slot 5
+
+Settled 2026-08-16 with `docs/ghidra/HmaRtti.java`. Recovering
+`ZHM5BaseCharacter`'s vtables through RTTI produced five tables, and every one
+of them matches the entry count the SDK header declares:
+
+| Sub-object offset | Base | Entries found | Header declares |
+|---|---|---|---|
+| `0x00` | `ZEntityImpl` | 24 | — |
+| `0x08` | `IHM5BaseCharacter` | 5 | 5, adds nothing beyond `IComponentInterface` |
+| `0x0c` | **`IBaseCharacter`** | **12** | **12** |
+| `0x10` | `IMorphemeCutSequenceAnimatable` | 11 | 11 |
+| `0x14` | `IBoneCollidable` | 3 | 3 |
+
+Five independent agreements. The headers are faithful and the base order is
+the declared one.
+
+The `0x0c` table itself:
+
+```
+[ 0] 00a199f0                    destructor
+[ 1] 004594d0                    GetVariantRef
+[ 2] 0085e2e0   <-- same         AddRef
+[ 3] 0085e2e0   <-- address      Release
+[ 4] 00917400                    QueryInterface
+[ 5] 0080df50   48 bytes         YouGotHit
+[ 6] 00c758f0    5 bytes         CanProjectileHitCharacter
+[ 7] 004f8b90                    GetCollisionLayer
+[ 8] 0056b100  136 bytes         RegisterAttachment
+[ 9] 005e03d0  279 bytes         UnregisterAttachment
+[10] 0087fd40                    IsRagdoll
+[11] 0087e6e0   37 bytes         GetLinkedEntityBase
+[12] end of table
+```
+
+`0x0080df50` is `ZHM5BaseCharacter`'s own implementation. `ZHitman5` overrides
+it at a different address, which is fine — the index is what the patch needs,
+and an inherited vtable keeps its indices.
+
+**`ZHitman5` has no type descriptor of its own.** Only
+`TComponentInfo<ZHitman5, IEntity>` names it, so MSVC either never emitted one
+or the linker folded it away. It does not matter here, but it is worth knowing
+before going looking for one.
+
+### The fingerprint this produced
+
+`AddRef` and `Release` are separate declarations with the same trivial body, so
+the linker folds them onto one address. **Every** `IComponentInterface`-derived
+vtable in the dump shows slots 2 and 3 identical —
+`ZHM5BaseCharacter`, `ZSharedSensorDef` and `ZCheckPointManagerEntity` all do,
+across unrelated hierarchies — and `IMorphemeCutSequenceAnimatable`, which does
+not derive from it, does not.
+
+`DownedState::ValidateAndPatch` now checks that before patching. It is a real
+test where the previous one was not: the old check asked whether the entries
+looked like code, and every entry in a vtable looks like code, so it could
+never have caught being off by one.
+
+---
+
+## 2b. The question this replaced
 
 **Confirm which vtable slot `IBaseCharacter::YouGotHit` occupies.**
 

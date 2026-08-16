@@ -16,16 +16,43 @@ namespace Coop::Game
     {
         // Where YouGotHit sits in IBaseCharacter's vtable.
         //
-        // Derived, not guessed. IComponentInterface declares five virtuals -
-        // the destructor, GetVariantRef, AddRef, Release, QueryInterface - and
-        // IBaseCharacter's own destructor overrides slot 0 rather than adding
-        // one. YouGotHit is therefore the first entry it contributes.
+        // Confirmed against the shipping binary, not derived and hoped for.
+        // Recovering ZHM5BaseCharacter's vtables through RTTI gives five
+        // tables whose entry counts match the SDK headers exactly:
         //
-        // The SDK's headers are reconstructions, so a virtual the header omits
-        // would shift this. That is why ValidateAndPatch checks what it finds
-        // before writing anything, and why nothing is patched when the check
-        // fails.
+        //   0x00  ZEntityImpl                      24 entries
+        //   0x08  IHM5BaseCharacter                 5   (adds nothing)
+        //   0x0c  IBaseCharacter                   12
+        //   0x10  IMorphemeCutSequenceAnimatable   11
+        //   0x14  IBoneCollidable                   3
+        //
+        // Five independent agreements, so the headers are faithful and the
+        // base order is the declared one. In the 0x0c table slots 2 and 3 are
+        // the same function - AddRef and Release, both trivial - slot 4 is
+        // QueryInterface, and slot 5 is the first substantial entry. That is
+        // YouGotHit, at 0x0080df50 in ZHM5BaseCharacter's own implementation.
+        //
+        // ZHitman5 carries no type descriptor of its own, but it does not need
+        // one: it derives from ZHM5BaseCharacter, and an inherited vtable keeps
+        // its indices. Slot 5 holds for the player too.
         constexpr size_t kYouGotHitSlot = 5;
+
+        // IComponentInterface's AddRef and Release are separate declarations
+        // compiling to the same trivial body, so the linker folds them onto one
+        // address. Every vtable derived from it in the dump shows slots 2 and 3
+        // identical, and the one interface that does not derive from it -
+        // IMorphemeCutSequenceAnimatable - does not.
+        //
+        // That makes it a fingerprint rather than a guess, and a far better
+        // check than "these look like code": every entry in a vtable looks like
+        // code, so the old check could not have caught being off by one.
+        constexpr size_t kAddRefSlot  = 2;
+        constexpr size_t kReleaseSlot = 3;
+
+        // IBaseCharacter declares exactly twelve virtuals. Advisory rather than
+        // blocking: reading past a table's end can land on the next one in
+        // .rdata, which is still a code pointer.
+        constexpr size_t kExpectedEntryCount = 12;
 
         // Offsets into SHitInfo, from the 2012 development build's headers:
         //
@@ -197,20 +224,44 @@ namespace Coop::Game
             }
         }
 
-        // Every entry up to and including the one being replaced must look
-        // like code. If the reconstructed class layout is wrong, the odds of
-        // six consecutive plausible function pointers are slim, and being
-        // wrong here means replacing something that is not YouGotHit.
+        // Every entry up to and including the one being replaced must be code.
+        // This catches a pointer that landed somewhere it should not have; it
+        // does not catch being off by one, because every entry in a vtable is
+        // code. The fingerprint below is what catches that.
         for (size_t i = 0; i <= slot; ++i)
         {
             if (!PointerIsExecutable(vtable[i]))
             {
                 m_diagnostic = std::format(
-                    "vtable entry {} is not executable - class layout does not match, "
-                    "damage interception stays off", i);
+                    "vtable entry {} is not executable - this is not the table "
+                    "we think it is, damage interception stays off", i);
 
                 return false;
             }
+        }
+
+        // The IComponentInterface fingerprint: AddRef and Release fold onto one
+        // address. If slots 2 and 3 differ, either this is not an
+        // IComponentInterface-derived vtable or the layout has shifted - and in
+        // both cases slot 5 is not YouGotHit.
+        if (vtable[kAddRefSlot] != vtable[kReleaseSlot])
+        {
+            m_diagnostic =
+                "vtable slots 2 and 3 differ, so this is not the IBaseCharacter "
+                "table - damage interception stays off";
+
+            return false;
+        }
+
+        // How long the table actually is. Twelve is what IBaseCharacter should
+        // have; anything else is worth saying out loud without refusing to
+        // arm, because a table butting up against the next one in .rdata reads
+        // as longer than it is.
+        size_t entryCount = 0;
+
+        while (entryCount < 64 && PointerIsExecutable(vtable[entryCount]))
+        {
+            ++entryCount;
         }
 
         DWORD previousProtection = 0;
@@ -230,7 +281,13 @@ namespace Coop::Game
         m_patchedVtable = vtable;
         m_patchedSlot   = slot;
         m_armed         = true;
-        m_diagnostic    = "damage interception armed";
+
+        m_diagnostic = entryCount == kExpectedEntryCount
+            ? std::format("damage interception armed, slot {} of a {}-entry "
+                          "IBaseCharacter table", slot, entryCount)
+            : std::format("damage interception armed, slot {} - but the table "
+                          "reads as {} entries rather than {}, so check this "
+                          "before trusting it", slot, entryCount, kExpectedEntryCount);
 
         return true;
     }
