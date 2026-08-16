@@ -97,24 +97,14 @@ jobs:
 
           Set-Content $path $txt.Replace($from, $to) -NoNewline
 
-      # The panel this package puts behind the tilde key belongs to this mod as
-      # far as anyone installing it is concerned, so it says so. The credit line
-      # underneath is not decoration: this is a modified build of somebody
-      # else's GPL project, and the panel is the only place a user would ever
-      # see whose engine work it rests on.
-      - name: Patch SDK main menu title
+      # The menu bar the loader draws across the top of the screen opened with
+      # "Hitman Absolution SDK" in bold and the SDK's own MODS and Settings
+      # buttons, before any of the mods somebody actually installed. That, and
+      # the magenta the whole interface is themed in, are what this changes.
+      # Presentation only - nothing here alters what any of it does.
+      - name: Patch SDK appearance (see .github/scripts/patch-sdk-appearance.ps1)
         shell: pwsh
-        run: |
-          $path = "sdk/HitmanAbsolutionSDK/src/UI/MainMenu.cpp"
-          $txt  = Get-Content $path -Raw
-          $from = 'ImGui::Text("Hitman Absolution SDK");'
-          $to   = 'ImGui::Text("Absolution Co-op");' + "`n" + '    ImGui::TextDisabled("built on HitmanAbsolutionSDK by pavledev");'
-
-          if (-not $txt.Contains($from)) {
-            throw "MainMenu.cpp no longer prints what this patch expects - check it before shipping"
-          }
-
-          Set-Content $path $txt.Replace($from, $to) -NoNewline
+        run: .\mod\.github\scripts\patch-sdk-appearance.ps1 -SdkRoot sdk
 
       # Three defects in the SDK and its loader, all found by whoever debugged
       # the "click Play four times before it starts" problem. The important one

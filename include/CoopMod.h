@@ -56,11 +56,6 @@ private:
     void RenderEngineTab();
     void RenderHudOverlay();
 
-    // Restyles the shared ImGui context to neutral greys. The SDK's default is
-    // a saturated purple, and this mod's panels sit next to the game's own art
-    // rather than on a desktop.
-    void ApplyTheme();
-
     void AddLogLine(const std::string& line);
     std::string DescribeEvent(const Coop::Net::EventMessage& event) const;
     std::string PeerName(uint8_t peerId) const;
@@ -75,7 +70,6 @@ private:
     // UI state
     bool m_isOpen      = false;
     bool m_showOverlay = true;
-    bool m_themeApplied = false;
 
     char m_hostAddress[64] = "127.0.0.1:47474";
     char m_playerName[32]  = "Agent";
