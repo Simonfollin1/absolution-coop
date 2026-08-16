@@ -146,6 +146,7 @@ private:
     // Which level we last told everybody we were in, and which one somebody
     // else says they are in. The second is what "go to them" acts on.
     std::string m_publishedScene;
+    float       m_sceneAnnounceIn = 0.f;
     std::string m_peerScene;
     std::string m_peerSceneOwner;
     std::string m_sceneError;

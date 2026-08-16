@@ -1,5 +1,8 @@
 #include <Windows.h>
 
+#include <algorithm>
+#include <cctype>
+
 #include <Glacier/ZLevelManager.h>
 #include <Glacier/Module/ZHitman5Module.h>
 #include <Glacier/Scene/ZEntitySceneContext.h>
@@ -64,6 +67,27 @@ namespace Coop::Game
                 return false;
             }
         }
+    }
+
+    bool SceneSync::IsMissionScene(const std::string& scene)
+    {
+        if (scene.empty())
+        {
+            return false;
+        }
+
+        // HMA.ini boots into assembly:/scenes/Menu/Menu_Main.entity, and every
+        // front-end scene lives under the same folder. A player sitting in the
+        // menu is not somewhere anybody should be offered a ride to - without
+        // this, the one still in the menu announces it, and the one playing
+        // gets a button that would drop them out of their own mission.
+        std::string lowered = scene;
+
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        return lowered.find("/menu") == std::string::npos
+            && lowered.find("menu_") == std::string::npos;
     }
 
     std::string SceneSync::CurrentScene()

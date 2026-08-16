@@ -27,9 +27,14 @@ namespace Coop::Game
     class SceneSync
     {
     public:
-        // The scene this game is in, from the level manager. Empty in the menu
-        // or when it cannot be read.
+        // The scene this game is in, from the level manager. Empty when it
+        // cannot be read.
         static std::string CurrentScene();
+
+        // Whether a scene name is a mission rather than the front end. The
+        // menu is a scene like any other, and somebody sitting in it is not a
+        // place to offer anyone a ride to.
+        static bool IsMissionScene(const std::string& scene);
 
         // Which checkpoint the parameters were last loaded with, or -1.
         static int CurrentCheckpoint();

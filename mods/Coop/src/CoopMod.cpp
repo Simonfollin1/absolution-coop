@@ -537,15 +537,50 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
 
         Diag::Log("scene: we are in %s", scene.empty() ? "(menu)" : scene.c_str());
 
-        if (m_session.IsActive())
-        {
-            Net::EventMessage announcement;
-            announcement.type = Net::EventType::LevelChanged;
-            announcement.x    = static_cast<float>(Game::SceneSync::CurrentCheckpoint());
-            announcement.text = scene;
+        // Say it now as well as on the timer below, so a level change is not
+        // sitting behind a three second wait.
+        m_sceneAnnounceIn = 0.f;
+    }
 
-            m_session.SendEvent(announcement);
+    // Repeated, not just sent on change.
+    //
+    // Announcing only on change meant a host who was already in a mission when
+    // the session started never announced anything at all: the scene had been
+    // recorded while offline, so it never changed again, so nobody was ever
+    // told where the host was and the button to follow never appeared. The same
+    // hole swallowed anyone who joined late, and any packet that went missing.
+    //
+    // A scene name every few seconds is nothing next to the position updates
+    // already going out sixty times a second, and it makes the whole thing
+    // self-healing: whatever anybody missed, they learn within three seconds of
+    // being connected.
+    if (m_session.IsActive())
+    {
+        m_sceneAnnounceIn -= deltaSeconds;
+
+        if (m_sceneAnnounceIn <= 0.f)
+        {
+            constexpr float kAnnounceEvery = 3.f;
+
+            m_sceneAnnounceIn = kAnnounceEvery;
+
+            // The menu is a scene like any other, and announcing it would
+            // offer everybody still playing a button out of their own mission.
+            if (Game::SceneSync::IsMissionScene(m_publishedScene))
+            {
+                Net::EventMessage announcement;
+                announcement.type = Net::EventType::LevelChanged;
+                announcement.x    = static_cast<float>(Game::SceneSync::CurrentCheckpoint());
+                announcement.text = m_publishedScene;
+
+                m_session.SendEvent(announcement);
+            }
         }
+    }
+    else
+    {
+        // Connecting should announce immediately, not up to three seconds later.
+        m_sceneAnnounceIn = 0.f;
     }
 
     // A scene load somebody asked for from the panel. Done here, on the game
@@ -1157,7 +1192,8 @@ void CoopMod::PumpEvents()
         // Somebody said which level they are in. Remembered rather than acted
         // on: loading a level throws away everything the player was doing, and
         // that is not a decision to make because a packet arrived.
-        if (event.type == Net::EventType::LevelChanged && !event.text.empty())
+        if (event.type == Net::EventType::LevelChanged &&
+            Game::SceneSync::IsMissionScene(event.text))
         {
             m_peerScene           = event.text;
             m_peerSceneCheckpoint = static_cast<int>(event.x);
