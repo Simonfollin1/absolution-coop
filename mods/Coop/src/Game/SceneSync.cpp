@@ -226,6 +226,94 @@ namespace Coop::Game
             }
         }
 
+        // The scene context's vtable, verified rather than trusted.
+        //
+        // Two of its slots have addresses every shipped mod hooks: ClearScene
+        // at base+0x265A80 and CreateScene(const ZString&) at base+0x4479E0.
+        // Finding those two in the live table anchors every neighbour by
+        // counting declarations - which sidesteps both the SDK header being
+        // wrong and MSVC's habit of laying adjacent overloads out in reverse.
+        constexpr uintptr_t kClearSceneRva  = 0x265A80;
+        constexpr uintptr_t kCreateSceneRva = 0x4479E0;
+        constexpr size_t    kVtableScan     = 32;
+
+        struct VtableMap
+        {
+            void** table        = nullptr;
+            int    clearScene   = -1;   // anchor
+            int    createScene  = -1;   // anchor, the ZString overload
+            bool   valid        = false;
+        };
+
+        bool ReadVtable(const void* object, uintptr_t moduleBase, VtableMap* out)
+        {
+            __try
+            {
+                void** table = *reinterpret_cast<void** const*>(object);
+
+                out->table = table;
+
+                for (size_t i = 0; i < kVtableScan; ++i)
+                {
+                    const uintptr_t entry = reinterpret_cast<uintptr_t>(table[i]);
+
+                    if (entry == moduleBase + kClearSceneRva)  out->clearScene  = static_cast<int>(i);
+                    if (entry == moduleBase + kCreateSceneRva) out->createScene = static_cast<int>(i);
+                }
+
+                out->valid = out->clearScene >= 0 && out->createScene >= 0;
+
+                return true;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                return false;
+            }
+        }
+
+        bool ReadVtableEntry(void** table, size_t index, uintptr_t* out)
+        {
+            __try
+            {
+                *out = reinterpret_cast<uintptr_t>(table[index]);
+                return true;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                return false;
+            }
+        }
+
+        void DumpVtable(const VtableMap& map)
+        {
+            Diag::Log("scene: vtable anchors - ClearScene at slot %d, CreateScene(ZString) at slot %d",
+                      map.clearScene, map.createScene);
+
+            for (size_t i = 0; i < kVtableScan; ++i)
+            {
+                uintptr_t entry = 0;
+
+                if (ReadVtableEntry(map.table, i, &entry))
+                {
+                    Diag::Log("scene:   vtbl[%02u] = HMA.exe+0x%06X%s",
+                              static_cast<unsigned>(i),
+                              static_cast<unsigned>(entry - BaseAddress),
+                              static_cast<int>(i) == map.clearScene  ? "  <- ClearScene" :
+                              static_cast<int>(i) == map.createScene ? "  <- CreateScene(ZString)" : "");
+                }
+            }
+        }
+
+        // Slot positions counted from ClearScene in the interface declaration:
+        //   +1 PrepareNewScene   +4 ResetScene        +5 SetSceneResources
+        //   +16 StartEntities    +20 SetSceneInitParameters
+        // CreateScene(ZString) is not counted - its own anchor covers it, so
+        // the overload-order question never matters.
+        constexpr int kRelPrepareNewScene        = 1;
+        constexpr int kRelSetSceneResources      = 5;
+        constexpr int kRelStartEntities          = 16;
+        constexpr int kRelSetSceneInitParameters = 20;
+
         // A ZResourcePtr fetched under guard. Holds raw storage so nothing is
         // constructed unless the engine call actually completed.
         class FetchedPtr
@@ -303,6 +391,7 @@ namespace Coop::Game
             float waited  = 0.f;
             bool  fetched = false;   // the three stubs have been requested
             bool  ready   = false;
+            bool  fellBack = false;  // the manual pipeline has been tried
         };
 
         Pending* g_pending = nullptr;
@@ -637,7 +726,10 @@ namespace Coop::Game
 
     bool SceneSync::IsReadyToCommit()
     {
-        return g_pending && g_pending->ready;
+        // The stage check matters: pending stays alive after Commit so the
+        // fallback has the resources, and without it the caller would commit
+        // again every frame.
+        return g_pending && g_pending->ready && g_stage.load() == Stage::Ready;
     }
 
     bool SceneSync::Commit(std::string& error)
@@ -696,6 +788,22 @@ namespace Coop::Game
         Diag::Log("scene: parameters written - %s at checkpoint %d, storymode",
                   pending.entry->scene, pending.checkpoint);
 
+        {
+            static bool dumped = false;
+
+            if (!dumped)
+            {
+                dumped = true;
+
+                VtableMap map;
+
+                if (ReadVtable(context, BaseAddress, &map))
+                {
+                    DumpVtable(map);
+                }
+            }
+        }
+
         // Then the flag. This is the whole handover: the engine's main loop
         // sees it, runs its own teardown, loading screen, resource resolution
         // and scene build - the exact pipeline a mission start from the menu
@@ -717,16 +825,139 @@ namespace Coop::Game
                   "owns the load from here",
                   static_cast<unsigned>(kInSceneTransitionOffset), previous);
 
-        // The mount stays alive through the transition: everything the engine
-        // is about to resolve is already resident because of it, and the level
-        // it backs is the one being built. Released when the next transition
-        // replaces it.
+        // Everything stays alive: the mount because the engine is about to
+        // resolve out of it, the three stubs because the fallback needs them
+        // if the engine never picks the flag up. Released on arrival.
+        g_stage = Stage::Committed;
+
+        return true;
+    }
+
+    void SceneSync::ConfirmArrived()
+    {
+        if (!g_pending)
+        {
+            return;
+        }
+
+        Diag::Log("scene: arrival confirmed - releasing the in-flight bookkeeping");
+
+        // The new world builds out of the libraries this mount holds resident,
+        // so it survives until the transition after this one replaces it.
         FreeMount(g_keptMounted, "the previous level's mount");
 
-        g_keptMounted   = pending.library;
-        pending.library = nullptr;
+        g_keptMounted      = g_pending->library;
+        g_pending->library = nullptr;
 
         Finish(Stage::Committed);
+    }
+
+    bool SceneSync::TryFallback(std::string& error)
+    {
+        error.clear();
+
+        if (!g_pending || !g_pending->ready || g_pending->fellBack)
+        {
+            error = "nothing in flight to fall back with";
+            return false;
+        }
+
+        if (!Hitman5Module)
+        {
+            error = "the game module is not up";
+            return false;
+        }
+
+        ZEntitySceneContext* context = Hitman5Module->GetSceneContext();
+
+        if (!context)
+        {
+            error = "there is no scene context";
+            return false;
+        }
+
+        Pending& pending = *g_pending;
+
+        pending.fellBack = true;
+
+        // The engine ignored the flag, so take it back before doing anything
+        // by hand - two drivers is worse than one.
+        AbortEngineTransition();
+
+        // The full pipeline this time, in the order ZEngineAppCommon::LoadScene
+        // runs it per the dev build's symbols: teardown, prepare, the raw
+        // strings, the resolved resources, the scene, the start. The first
+        // manual attempt skipped prepare, the strings and the start - the
+        // three steps nothing shipped documents - and built nothing.
+        //
+        // Every call goes through a vtable slot verified against the two
+        // anchor addresses the other mods hook, so a wrong header lays out a
+        // log line instead of a wrong call.
+        VtableMap map;
+
+        if (!ReadVtable(context, BaseAddress, &map) || !map.valid)
+        {
+            error = "the scene context's vtable does not contain the known anchors";
+
+            Diag::Log("scene: fallback refused - ClearScene/CreateScene not found in the vtable");
+
+            return false;
+        }
+
+        DumpVtable(map);
+
+        using ClearSceneFn       = void(__thiscall*)(void*, bool);
+        using PrepareNewSceneFn  = void(__thiscall*)(void*);
+        using CreateSceneZFn     = void(__thiscall*)(void*, const ZString&);
+        using SetSceneInitFn     = void(__thiscall*)(void*, const SSceneInitParameters&);
+        using SetSceneResFn      = void(__thiscall*)(void*, TResourcePtr<IEntityFactory>,
+                                                     TResourcePtr<IEntityBlueprintFactory>,
+                                                     ZResourcePtr);
+        using StartEntitiesFn    = void(__thiscall*)(void*);
+
+        const auto slot = [&](int rel) { return map.table[map.clearScene + rel]; };
+
+        // Logged before each step: if the game dies inside one, the last line
+        // names the call that did it.
+        Diag::Log("scene: fallback - ClearScene(true)");
+
+        reinterpret_cast<ClearSceneFn>(map.table[map.clearScene])(context, true);
+
+        Diag::Log("scene: fallback - PrepareNewScene");
+
+        reinterpret_cast<PrepareNewSceneFn>(slot(kRelPrepareNewScene))(context);
+
+        Diag::Log("scene: fallback - SetSceneInitParameters(%s)", pending.entry->scene);
+
+        SSceneInitParameters initParameters;
+
+        {
+            const ZString scenePath(pending.entry->scene);
+            const ZString streaming("");
+
+            initParameters.m_SceneResource  = ZString::CopyFrom(scenePath);
+            initParameters.m_StreamingState = ZString::CopyFrom(streaming);
+        }
+
+        reinterpret_cast<SetSceneInitFn>(slot(kRelSetSceneInitParameters))(context, initParameters);
+
+        Diag::Log("scene: fallback - SetSceneResources");
+
+        reinterpret_cast<SetSceneResFn>(slot(kRelSetSceneResources))(
+            context,
+            TResourcePtr<IEntityFactory>(pending.factory.Get()),
+            TResourcePtr<IEntityBlueprintFactory>(pending.blueprint.Get()),
+            pending.headerLib.Get());
+
+        Diag::Log("scene: fallback - CreateScene(\"\")");
+
+        reinterpret_cast<CreateSceneZFn>(map.table[map.createScene])(context, ZString(""));
+
+        Diag::Log("scene: fallback - StartEntities");
+
+        reinterpret_cast<StartEntitiesFn>(slot(kRelStartEntities))(context);
+
+        Diag::Log("scene: fallback complete - watching for the chapter to change");
 
         return true;
     }

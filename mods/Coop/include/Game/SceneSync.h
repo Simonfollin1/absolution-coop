@@ -75,6 +75,17 @@ namespace Coop::Game
         // decides nothing is going to happen.
         static void AbortEngineTransition();
 
+        // The caller saw the chapter change: the load happened. Releases the
+        // in-flight bookkeeping and keeps the mount alive for the new world.
+        static void ConfirmArrived();
+
+        // The engine never picked the flag up. Runs the whole pipeline by
+        // hand instead - teardown, init parameters, resources, scene, start -
+        // through vtable slots verified at runtime against the two anchor
+        // addresses every shipped mod hooks. Returns false when it could not
+        // even be attempted; the caller re-arms its watchdog when it could.
+        static bool TryFallback(std::string& error);
+
         // Watches the level manager's transition window - the flag and the
         // fields beside it - and logs every change. Called once a frame. This
         // is how the +0x34 reading gets confirmed against the game's own

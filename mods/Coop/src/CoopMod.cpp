@@ -732,15 +732,34 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
 
             Diag::Log("scene: the load happened - chapter %u now",
                       m_probe.LocalState().level);
+
+            Game::SceneSync::ConfirmArrived();
         }
         else if (m_sceneLoadWatch <= 0.f)
         {
+            // The flag route went nowhere. Before giving up, run the whole
+            // pipeline by hand - the resources are still resident and the
+            // vtable slots are verified against known anchors. One press, two
+            // attempts, and the log says which one worked.
+            std::string fallbackError;
+
+            if (Game::SceneSync::TryFallback(fallbackError))
+            {
+                m_sceneLoadWatch = 30.f;
+
+                AddLogLine("The engine ignored the handover - ran its pipeline "
+                           "by hand instead, watching again");
+
+                return;
+            }
+
             Game::SceneSync::SetSceneName(m_sceneLoadWasIn);
             Game::SceneSync::AbortEngineTransition();
+            Game::SceneSync::Cancel();
 
             const char* note =
-                "the level's resources loaded and the transition flag was set, "
-                "but the engine never picked it up - the log has the window trace";
+                "the level did not load either way - the log has every step "
+                "and the vtable dump";
 
             {
                 Threading::WriteGuard guard(m_sceneShareLock);
