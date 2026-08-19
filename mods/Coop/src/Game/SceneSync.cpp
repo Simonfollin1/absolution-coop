@@ -757,7 +757,7 @@ namespace Coop::Game
         switch (g_stage.load())
         {
             case Stage::Streaming: return "loading their level...";
-            case Stage::Ready:     return "building it now";
+            case Stage::Ready:     return "return to the main menu to go";
             case Stage::Committed: return "asked the engine for it";
             case Stage::Failed:    return "it did not load";
             default:               return "";
@@ -1266,6 +1266,33 @@ namespace Coop::Game
         }
 
         return window[0] != 0;
+    }
+
+    bool SceneSync::LevelTornDown()
+    {
+        // Without a level manager there is nothing to read: treat it as
+        // not-yet-clean so the load waits rather than firing blind.
+        if (!LevelManager)
+        {
+            return false;
+        }
+
+        uint32_t latch = 0;
+
+        // Cannot read it: do not claim a clean state we cannot see. Waiting is
+        // safe (the load simply does not fire); a false clean is not (it fires
+        // into a live level and hangs the game).
+        if (!ReadTransitionLatch(LevelManager, &latch))
+        {
+            return false;
+        }
+
+        // +0x6c bit 0x10 tracks the level's game-mode object: set while it is
+        // alive, clear once it has been destroyed and the front end is showing.
+        // SwitchToScene only completes from the clear state - see
+        // research/FINDINGS.md, "the live-level teardown". Waiting for this is
+        // what keeps Go there from ever firing into a live level and freezing.
+        return (latch & 0x10) == 0;
     }
 
     void SceneSync::AbortEngineTransition()

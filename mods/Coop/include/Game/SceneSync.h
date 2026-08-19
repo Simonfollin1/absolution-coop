@@ -78,6 +78,15 @@ namespace Coop::Game
         // engine is mid-way through consuming, so the caller waits it out.
         static bool EngineMidTransition();
 
+        // Whether the current level has been torn down to the clean front-end
+        // state - the game-mode object that owns the player destroyed, so the
+        // level manager's +0x6c bit 0x10 is back to zero. SwitchToScene only
+        // completes from here: from inside a live level the engine will not
+        // stand a second game-mode object up beside the first, so a switch
+        // there sets the flag and hangs. Go there arms and waits for this
+        // before it commits, so it can never freeze a live game.
+        static bool LevelTornDown();
+
         // Clears the transition flag this mod set, for when the watchdog
         // decides nothing is going to happen.
         static void AbortEngineTransition();

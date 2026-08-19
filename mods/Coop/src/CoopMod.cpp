@@ -652,8 +652,24 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
             m_sceneError = started ? std::string() : error;
         }
 
-        AddLogLine(started ? std::string("Loading their level - waiting for it to stream in")
-                           : std::format("Could not go there: {}", error));
+        if (started)
+        {
+            // The load is armed, not fired: from a live level SwitchToScene
+            // hangs, so the mod holds it until the level is torn down to the
+            // clean front-end (the +0x6c latch back to 0) and only then commits.
+            // Say so, in the log file and on the panel, so the manual step is
+            // an instruction rather than a mystery.
+            Diag::Log("scene: Go there armed for %s - holding until the level is "
+                      "torn down; return to the main menu to complete the jump",
+                      request.c_str());
+
+            AddLogLine("Go there armed - open the pause menu and Return to Main "
+                       "Menu, and I'll load their level from there");
+        }
+        else
+        {
+            AddLogLine(std::format("Could not go there: {}", error));
+        }
     }
 
     Game::SceneSync::Update(deltaSeconds);
@@ -684,8 +700,18 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
     // player restarting a checkpoint from the pause menu while the level
     // streamed in, say. Writing the parameters mid-consumption would hand the
     // engine half of one destination and half of another.
-    if (Game::SceneSync::IsReadyToCommit() && !Game::SceneSync::EngineMidTransition())
+    if (Game::SceneSync::IsReadyToCommit()
+        && !Game::SceneSync::EngineMidTransition()
+        && Game::SceneSync::LevelTornDown())
     {
+        // The level has been torn down to the clean front-end state, so the
+        // engine will actually complete the switch now instead of hanging on a
+        // second game-mode object standing beside the first. This is the moment
+        // an armed Go there fires - the log marks it so the wait, the teardown
+        // (the +0x6c latch dropping to 0), and the commit read as one story.
+        Diag::Log("scene: level torn down (clean front-end reached) - committing "
+                  "the armed load now");
+
         // Let go of everything the mod is holding that points into the world
         // about to be destroyed. The damage hook is a patched entry in the
         // player's vtable and the player is about to stop existing; the
