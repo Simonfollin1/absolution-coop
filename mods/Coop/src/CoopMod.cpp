@@ -264,10 +264,90 @@ namespace
     }
 }
 
+namespace
+{
+    // The phases the game thread moves through in a frame, in order. A stall
+    // report reads one of these back, so they name the work rather than a line
+    // number - the log has to be readable by whoever is holding the frozen game.
+    const char* const kFramePhases[] = {
+        "idle",
+        "probe update",
+        "jump state",
+        "downed flow",
+        "markers and keys",
+        "instinct",
+        "engine health",
+        "reading the scene name",
+        "announcing the scene",
+        "starting a jump",
+        "committing a jump",
+        "watching for arrival",
+        "session update",
+        "frame end",
+    };
+}
+
+void CoopMod::WatchdogMain()
+{
+    Diag::NameCurrentThread("watchdog");
+
+    uint64_t lastCount   = 0;
+    uint64_t lastMovedAt = GetTickCount64();
+    bool     reported    = false;
+
+    while (m_watchdogRunning.load(std::memory_order_relaxed))
+    {
+        Sleep(250);
+
+        const uint64_t count = m_frameCount.load(std::memory_order_relaxed);
+        const uint64_t now   = GetTickCount64();
+
+        if (count != lastCount)
+        {
+            lastCount   = count;
+            lastMovedAt = now;
+
+            if (reported)
+            {
+                reported = false;
+
+                Diag::Log("watchdog: the game thread is running again");
+            }
+
+            continue;
+        }
+
+        // Five seconds without finishing a frame is a freeze rather than a slow
+        // load: even a level load hands the loop back between frames.
+        if (!reported && now - lastMovedAt >= 5000)
+        {
+            reported = true;
+
+            const uint32_t phase = m_framePhase.load(std::memory_order_relaxed);
+
+            const char* const name =
+                phase < std::size(kFramePhases) ? kFramePhases[phase] : "unknown";
+
+            Diag::Log("watchdog: the game thread has not finished a frame for %llu ms "
+                      "- it is stuck in \"%s\" (phase %u), which is the work that did "
+                      "not return",
+                      static_cast<unsigned long long>(now - lastMovedAt), name, phase);
+        }
+    }
+}
+
 CoopMod::CoopMod() = default;
 
 CoopMod::~CoopMod()
 {
+    // Before Diag::Shutdown below, because it logs.
+    m_watchdogRunning.store(false);
+
+    if (m_watchdog.joinable())
+    {
+        m_watchdog.join();
+    }
+
     // Order matters on the way out. The session's thread has to stop before
     // anything it touches goes away, and the vtable patch has to be undone
     // before this DLL unloads - a patched entry pointing into unmapped memory
@@ -322,6 +402,16 @@ void CoopMod::OnEngineInitialized()
         delegate(this, &CoopMod::OnFrameUpdate);
 
     GameLoopManager->RegisterForFrameUpdate(delegate, 1);
+
+    // Started once the frame update is registered, so it only ever watches a
+    // loop that is actually meant to be running. Guarded because assigning over
+    // a joinable std::thread calls std::terminate, and this runs again on every
+    // engine re-initialisation.
+    if (!m_watchdog.joinable())
+    {
+        m_watchdogRunning.store(true);
+        m_watchdog = std::thread(&CoopMod::WatchdogMain, this);
+    }
 
     // Bindings come from mods/Coop.ini's [Bindings] section.
     InstallBindings();
@@ -500,6 +590,24 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
 
     const Diag::FrameCostScope costScope(m_cost);
 
+    // A breadcrumb per stage, for the watchdog thread to read back if this
+    // frame never finishes. A relaxed store of one word costs nothing and is
+    // the only thing that survives a hard freeze, which leaves no crash and no
+    // last log line - just a log that stops.
+    const auto phase = [this](const uint32_t stage)
+    {
+        m_framePhase.store(stage, std::memory_order_relaxed);
+    };
+
+    // Bumped however this frame leaves. The function has several early returns,
+    // and a counter that missed them would read to the watchdog as a stall.
+    struct FrameTick
+    {
+        std::atomic<uint64_t>& counter;
+
+        ~FrameTick() { counter.fetch_add(1, std::memory_order_relaxed); }
+    } frameTick{ m_frameCount };
+
     const bool toggleDown = m_toggleAction.Digital();
 
     if (toggleDown && !m_prevToggle)
@@ -520,6 +628,7 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
 
     m_prevToggle = toggleDown;
 
+    phase(1);
     m_probe.Update(updateEvent);
 
     // Real time, not game time: co-op has to keep running while one player is
@@ -527,11 +636,56 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
     // it does not implicitly become a float.
     const float deltaSeconds = static_cast<float>(updateEvent.m_RealTimeDelta.ToSeconds());
 
+    // Whether a Go there is in flight - armed and waiting for the teardown,
+    // committed, or streaming. While it is, the mod lets go of the world the
+    // way the commit path always has, but up front rather than at the last
+    // moment: the world is about to be torn down (the player returns to the
+    // main menu to complete the jump), and everything the mod holds that points
+    // into it - the damage hook patched into the player's vtable, the spectator
+    // camera, the peer avatars positioned against the local player - must not
+    // touch it while it dies. The last freeze was exactly this: the teardown
+    // ran with the mod still clamped on. Everything re-arms by itself once the
+    // new world is up.
+    phase(2);
+
+    {
+        const Game::SceneSync::Stage stage = Game::SceneSync::CurrentStage();
+
+        const bool loadActive = stage == Game::SceneSync::Stage::Ready
+                             || stage == Game::SceneSync::Stage::Committed
+                             || stage == Game::SceneSync::Stage::Streaming;
+
+        if (loadActive && !m_loadActivePrev)
+        {
+            Diag::Log("scene: jump in flight - releasing world contact (damage "
+                      "hook, spectator, peer drawing) so the teardown runs clean; "
+                      "god mode is off until the new level is up");
+
+            Game::TheDownedState().Disarm();
+            Game::TheDownedState().ResetForNewSession();
+
+            m_spectator.Leave();
+        }
+
+        m_loadActivePrev = loadActive;
+
+        m_worldContactSuspended.store(loadActive, std::memory_order_relaxed);
+    }
+
+    phase(10);
     UpdateSceneTransition();
-    UpdateDownedFlow(deltaSeconds);
+
+    // The downed flow re-arms the damage hook whenever it sees a player, so it
+    // must sit out the whole jump or the release above lasts exactly one frame.
+    if (!m_worldContactSuspended.load(std::memory_order_relaxed))
+    {
+        phase(3);
+        UpdateDownedFlow(deltaSeconds);
+    }
 
     // Markers fade on their own clock, and should keep fading after a session
     // ends rather than hanging in the world.
+    phase(4);
     m_avatars.TickMarkers(deltaSeconds);
 
     // Both of these used to sit below the session check, which meant the marker
@@ -543,13 +697,19 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
 
     // Instinct drives how teammates are drawn, so it is read before anything
     // draws and handed across rather than read from the render thread.
+    phase(5);
     m_instinct.Update(deltaSeconds);
     m_avatars.SetInstinct(m_instinct.Active());
 
     // The engine's own health, read from where the HUD reads it. Nothing acts
     // on this yet - it is being watched for a session so the offsets can be
-    // trusted before the whole damage model is rebuilt on top of them.
-    m_engineHealth.Update();
+    // trusted before the whole damage model is rebuilt on top of them. It reads
+    // the player's health object, so it sits the jump out with everything else.
+    if (!m_worldContactSuspended.load(std::memory_order_relaxed))
+    {
+        phase(6);
+        m_engineHealth.Update();
+    }
 
     // Which level we are in, tracked whether or not anybody is connected - the
     // panel compares against it on the render thread, and reading it there
@@ -560,6 +720,7 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
     // level was ever sent, so a host who started a mission simply became
     // "elsewhere" to everybody else, with no way for them to find out where
     // elsewhere was, and no way to follow.
+    phase(7);
     const std::string scene = Game::SceneSync::CurrentScene();
 
     if (scene != m_publishedScene)
@@ -588,6 +749,8 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
     // already going out sixty times a second, and it makes the whole thing
     // self-healing: whatever anybody missed, they learn within three seconds of
     // being connected.
+    phase(8);
+
     if (m_session.IsActive())
     {
         m_sceneAnnounceIn -= deltaSeconds;
@@ -624,6 +787,8 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
     // until they have all arrived, which is a few seconds later and several
     // frames along, so the player who pressed the button keeps a working game
     // in the meantime and gets it back if the level turns out not to load.
+    phase(9);
+
     if (m_sceneLoadPending)
     {
         std::string request;
@@ -880,6 +1045,7 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
         return;
     }
 
+    phase(12);
     PublishLocalState();
     PumpEvents();
 
@@ -943,7 +1109,15 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
         }
     }
 
-    // Where everyone is, resolved for drawing.
+    // Where everyone is, resolved for drawing. Skipped while a jump is in
+    // flight: this positions every peer against the local player, and during
+    // the teardown that player is being destroyed. The views simply stay as
+    // they were until the new world is up.
+    if (m_worldContactSuspended.load(std::memory_order_relaxed))
+    {
+        return;
+    }
+
     const float4& position = m_probe.PlayerPosition();
 
     m_avatars.Update(m_session.SnapshotPeers(),
@@ -1789,6 +1963,14 @@ void CoopMod::OnDrawMenu()
 
 void CoopMod::OnDraw3D()
 {
+    // Render thread. While a jump is in flight the world is being torn down
+    // underneath this, so nothing of the mod's is drawn into it - the renderer
+    // it would draw through belongs to the level that is going away.
+    if (m_worldContactSuspended.load(std::memory_order_relaxed))
+    {
+        return;
+    }
+
     m_avatars.Draw3D();
 }
 

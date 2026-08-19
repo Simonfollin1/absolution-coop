@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <deque>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <Glacier/ZGameLoopManager.h>
@@ -200,6 +201,32 @@ private:
     uint8_t     m_sceneLoadFromLvl = 0xFF;
     void*       m_sceneLoadPlayerWas = nullptr;
     float       m_sceneLoadWatch   = 0.f;
+
+    // True while a Go there is in flight - armed and waiting for the teardown,
+    // committed, or still streaming. Computed once a frame on the game thread;
+    // the render thread reads it to keep from drawing peers into a world that
+    // is being torn down. While it is set the mod holds NO contact with the
+    // world: the damage hook stays disarmed (the downed flow would otherwise
+    // re-arm it every frame), the spectator stays out, and the peer avatars are
+    // neither updated against the local player nor drawn. Everything re-arms by
+    // itself once the new world is up and the stage returns to Idle.
+    std::atomic<bool> m_worldContactSuspended{ false };
+    bool              m_loadActivePrev = false;
+
+    // The stall watchdog.
+    //
+    // A freeze during a level teardown leaves nothing behind: no crash, no last
+    // line, just a log that stops. The game thread stamps a phase as it moves
+    // through the frame and bumps a counter at the end of it; this thread
+    // samples both, and when the counter stops moving it writes down which
+    // phase the game thread died in. That turns "it froze" into a line naming
+    // the call, which is the difference between fixing it and guessing again.
+    void WatchdogMain();
+
+    std::thread           m_watchdog;
+    std::atomic<bool>     m_watchdogRunning{ false };
+    std::atomic<uint32_t> m_framePhase{ 0 };
+    std::atomic<uint64_t> m_frameCount{ 0 };
 
     char m_hostAddress[64] = "127.0.0.1:47474";
     char m_playerName[32]  = "Agent";
