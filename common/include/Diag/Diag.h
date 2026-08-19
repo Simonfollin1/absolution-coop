@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 // Diagnostics that survive the process dying.
 //
 // The SDK's own Logger writes to a console window and nothing else, so when the
