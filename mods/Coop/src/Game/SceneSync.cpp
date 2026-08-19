@@ -204,12 +204,21 @@ namespace Coop::Game
         // base is that minus 0x400000.
         constexpr uintptr_t kPrepareTransitionRva = 0x1A90F0;
 
+        // The engine's default start-checkpoint token, an STokenID it fills at
+        // runtime. The menu's story-start caller (FUN_0071e6d0) points
+        // startCheckpoint at this global and reuses its two dwords as the
+        // (value, valid) pair for both the bonus weapon and the bonus outfit.
+        // The dwords are at VA 0x114C7CC / 0x114C7D0, i.e. RVA 0xD4C7CC and the
+        // dword after it. It sits in .data past the raw image, so it is zero on
+        // disk and only meaningful once the game has initialised - which it has
+        // by the time anyone is in a level pressing Go there.
+        constexpr uintptr_t kDefaultStartTokenRva = 0xD4C7CC;
+
         struct SwitchContext
         {
-            void*          levelManager   = nullptr;
-            const void*    scene          = nullptr;   // const ZString*
-            const void*    startCheckpoint = nullptr;  // const STokenID*
-            int            gameMode       = 0;
+            void*          levelManager    = nullptr;
+            const void*    scene           = nullptr;   // const ZString*
+            int            gameMode        = 0;
             int            checkpointIndex = 0;
         };
 
@@ -224,20 +233,41 @@ namespace Coop::Game
             reinterpret_cast<PrepareFn>(BaseAddress + kPrepareTransitionRva)(
                 call->levelManager);
 
+            // SwitchToScene copies all ten arguments into the level manager's
+            // transition-parameter block (gameMode -> +0x0C, the token -> +0x28,
+            // bUseSaveGame -> +0x25, and so on) and then hands the load to the
+            // engine's own per-frame loader. Those trailing arguments are not
+            // free to invent: the loader reads that block, and an earlier
+            // version that passed zeros for the token and bUseSaveGame set the
+            // transition flag but never completed - the scene name changed and
+            // the game froze, because the loader had no valid start state to
+            // stream in. These values are copied verbatim from the game's own
+            // story-start caller, whose whole body is this latch plus this call:
+            // startCheckpoint points at the engine's default token, that token's
+            // two dwords stand in for the bonus weapon and outfit, bRestoring is
+            // 0, and bUseSaveGame is 1. Reading the same globals makes the call
+            // byte-for-byte what the menu passes when it starts a mission.
+            const void* const startToken =
+                reinterpret_cast<const void*>(BaseAddress + kDefaultStartTokenRva);
+            const unsigned tokenValue =
+                *reinterpret_cast<const unsigned*>(BaseAddress + kDefaultStartTokenRva);
+            const unsigned tokenValid =
+                *reinterpret_cast<const unsigned*>(BaseAddress + kDefaultStartTokenRva + 4);
+
             using SwitchFn = void(__thiscall*)(void*, int, const void*, int, const void*,
                                                unsigned, unsigned, unsigned, unsigned,
                                                unsigned, unsigned);
 
             reinterpret_cast<SwitchFn>(BaseAddress + kSwitchToSceneRva)(
                 call->levelManager,
-                call->gameMode,
+                call->gameMode,          // eCGM_STORYMODE (1)
                 call->scene,
                 call->checkpointIndex,
-                call->startCheckpoint,
-                0, 0,      // no bonus weapon
-                0, 0,      // no bonus outfit
-                0,         // bRestoring
-                0);        // bUseSaveGame
+                startToken,              // startCheckpoint = the engine's default token
+                tokenValue, tokenValid,  // bonus weapon (value, valid)
+                tokenValue, tokenValid,  // bonus outfit (value, valid)
+                0,                       // bRestoring
+                1);                      // bUseSaveGame - the story-start path passes 1
         }
 
         // ZLevelManager's transition window.
@@ -257,6 +287,14 @@ namespace Coop::Game
         // what actually hands the job to the engine, loading screen and all.
         constexpr uintptr_t kInSceneTransitionOffset = 0x34;
         constexpr size_t    kTransitionWindowBytes   = 0x10;
+
+        // The transition-state latch. Every in-game SwitchToScene is preceded by
+        // `and byte ptr [levelManager+0x6c], 0xfc`, which clears the low two
+        // bits; the engine's loader watches them to know a switch is armed.
+        // Logging the dword through a real, working level-to-level transition
+        // shows the exact values the engine drives it to, which is the ground
+        // truth Go there's own transition is measured against.
+        constexpr uintptr_t kTransitionLatchOffset = 0x6c;
 
         bool ReadTransitionWindow(const void* levelManager, uint8_t* out16)
         {
@@ -287,6 +325,21 @@ namespace Coop::Game
 
                 *previousOut = *flag;
                 *flag        = value;
+
+                return true;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                return false;
+            }
+        }
+
+        bool ReadTransitionLatch(const void* levelManager, uint32_t* out)
+        {
+            __try
+            {
+                *out = *reinterpret_cast<const uint32_t*>(
+                    reinterpret_cast<const uint8_t*>(levelManager) + kTransitionLatchOffset);
 
                 return true;
             }
@@ -958,15 +1011,11 @@ namespace Coop::Game
         const ZString view(pending.entry->scene);
         const ZString scene = ZString::CopyFrom(view);
 
-        // No named start checkpoint: the index says where to begin. The
-        // engine's own callers pass a pointer to an invalid token here, and a
-        // stale valid one would send the loader looking for a checkpoint that
-        // belongs to a different level.
-        STokenID startCheckpoint;
-
-        startCheckpoint.m_iValue = 0;
-        startCheckpoint.m_bValid = false;
-
+        // The start checkpoint, the bonus token, and bUseSaveGame are all set
+        // inside DoSwitchToScene, copied from the game's own story-start caller.
+        // The index below says where to begin; the token is the engine's own
+        // default, not a hand-built one, so the loader sees exactly what the
+        // menu hands it.
         {
             static bool dumped = false;
 
@@ -990,7 +1039,6 @@ namespace Coop::Game
 
         call.levelManager    = LevelManager;
         call.scene           = &scene;
-        call.startCheckpoint = &startCheckpoint;
         call.gameMode        = eCGM_STORYMODE;
         call.checkpointIndex = pending.checkpoint;
 
@@ -1242,34 +1290,45 @@ namespace Coop::Game
             return;
         }
 
-        static uint8_t lastWindow[kTransitionWindowBytes] = {};
-        static bool    haveWindow = false;
+        static uint8_t  lastWindow[kTransitionWindowBytes] = {};
+        static uint8_t  lastLatchBits = 0xFF;
+        static bool     haveWindow = false;
 
-        uint8_t window[kTransitionWindowBytes] = {};
+        uint8_t  window[kTransitionWindowBytes] = {};
+        uint32_t latch = 0;
 
         if (!ReadTransitionWindow(LevelManager, window))
         {
             return;
         }
 
-        if (haveWindow && std::memcmp(window, lastWindow, sizeof(window)) == 0)
+        // Best effort - a fault just leaves the latch reading zero.
+        ReadTransitionLatch(LevelManager, &latch);
+
+        const uint8_t latchBits = static_cast<uint8_t>(latch & 0x3);
+
+        if (haveWindow && latchBits == lastLatchBits &&
+            std::memcmp(window, lastWindow, sizeof(window)) == 0)
         {
             return;
         }
 
         // Logged on every change so the game's OWN transitions confirm the
         // reading: start a mission from the menu and the byte at +0x34 should
-        // go 0 -> 1 -> 0 around the loading screen. If it does not, the flag
-        // is not where the dev build says, and the log will show it before
-        // anybody wonders why Go there did nothing.
+        // go 0 -> 1 -> 0 around the loading screen, and the low bits of the
+        // +0x6c latch move with it. If they do not, the fields are not where
+        // the dev build says, and the log will show it before anybody wonders
+        // why Go there did nothing.
         Diag::Log("scene: transition window +34=%02X%02X%02X%02X pkglist=%02X%02X%02X%02X "
-                  "preload=%02X%02X%02X%02X.%02X%02X%02X%02X",
+                  "preload=%02X%02X%02X%02X.%02X%02X%02X%02X  latch+6c=%08X",
                   window[0], window[1], window[2], window[3],
                   window[4], window[5], window[6], window[7],
                   window[8], window[9], window[10], window[11],
-                  window[12], window[13], window[14], window[15]);
+                  window[12], window[13], window[14], window[15],
+                  latch);
 
         std::memcpy(lastWindow, window, sizeof(lastWindow));
+        lastLatchBits = latchBits;
         haveWindow = true;
     }
 }
