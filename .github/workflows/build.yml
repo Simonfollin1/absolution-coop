@@ -56,6 +56,27 @@ jobs:
       - name: The bot must speak the same bytes
         run: python3 tools/coopbot/coopbot.py --selftest --golden golden.txt
 
+  # The bot as one exe, for machines with no Python on them. PyInstaller
+  # output occasionally annoys an antivirus; anyone bothered by that runs
+  # the .py itself with Python from the Microsoft Store instead.
+  bot-exe:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build coopbot.exe
+        run: |
+          pip install pyinstaller
+          pyinstaller --onefile --console --name coopbot tools/coopbot/coopbot.py
+
+      - name: Keep it
+        uses: actions/upload-artifact@v4
+        with:
+          name: coopbot
+          path: dist/coopbot.exe
+
   build:
     runs-on: windows-2022
 
