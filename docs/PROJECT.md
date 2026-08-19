@@ -364,12 +364,15 @@ there is then nothing to shoot.
 
 Ranked by what unlocks the most.
 
-**1. Loading a level — written, not yet confirmed in the game.** The chain is
-resources first, scene second, and §3.6 has it. What one run will settle: that
-the three resources report ready, that `ClearScene(true)` from a frame-update
-callback is a safe point, and that the engine starts the scene without being
-asked. All three are answered by `Coop.log` alone; the failure mode of each is a
-different last line.
+**1. Loading a level — third design, not yet confirmed in the game.** The dev
+build's symbols showed the menu's own path: write `SSceneParameters`, set
+`ZLevelManager::m_bInSceneTransition`, and the engine's main loop does the rest
+— loading screen included. The mod now mounts the level's libraries first (so
+nothing is resolved cold), then does exactly that write and that byte. A tracer
+logs the flag window on every change, so an ordinary mission start from the
+menu proves the offset before anybody bets a session on it. What one run
+settles: the trace shows 0→1→0 on a normal start, and Go there rides the same
+flag.
 
 **2. Mirroring the engine's health instead of shadowing it.** The offsets are
 known and read every frame. Letting the engine take the damage, reading what it

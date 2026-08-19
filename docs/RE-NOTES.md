@@ -974,6 +974,57 @@ reference, and then the source releases on its way out — so assigning one leav
 you holding a pointer you do not own and releasing a reference you never took.
 Construct them; never assign them. Same family of trap as `ZString`.
 
+### The transition pipeline, from the dev build's own symbols
+
+The 2012-12-18 development build ships private PDBs, and pavledev's
+`HitmanAbsolutionSDK2` is mined from them. It names the whole flow:
+
+1. The menu handler calls **`ZLevelManager::SwitchToScene(eGameMode,
+   sceneResource, nCheckpointIndex, sCheckpoint, BonusWeapon, BonusOutfit,
+   bRestoring, bUseSaveGame)`** — which writes `m_SceneTransitionData`, sets
+   **`m_bInSceneTransition`**, and warms a package list via `PreloadScene`.
+2. The engine's main loop (`ZEngineAppCommon::MainLoopSequence` →
+   `UpdateSceneTransition` → `HandleTransition`) notices the flag and calls
+   **`ZEngineAppCommon::LoadScene(SSceneInitParameters)`** — the one function
+   that takes a scene path and does everything: spins the loading screen on its
+   own thread (`ZLoadingTransitionHandler`), then drives the scene context
+   through `ClearScene(true)` → `PrepareNewScene()` → `SetSceneInitParameters`
+   → resolves the path into factory/blueprint/header-library → 
+   `SetSceneResources` → `CreateScene(streamingState)` → `StartEntities()`.
+
+Nothing outside the engine ever calls the context's methods. Every shipped mod
+only hooks them to observe. Which is why hand-calling them was always the wrong
+altitude: the mod's job is one write and one byte.
+
+### Where the flag is in retail
+
+The retail SDK hides everything after the parameters in `PAD(0x10)`:
+
+```
++0x04  SSceneParameters m_SceneTransitionData   (0x30 bytes)
++0x34  bool             m_bInSceneTransition     <- the handover
++0x38  TResourcePtr<SPackageListData> m_pLoadingPackageList
++0x3C  ZString          m_PreloadedSceneID
++0x44  TEntityRef<ZHitman5> m_rHitman
+```
+
+The dev build declares those four fields in exactly that order, and they fill
+the sixteen padded bytes exactly: bool+padding (4) + pointer (4) + ZString (8).
+The mod logs the whole window on every change, so any ordinary mission start
+confirms the byte at `+0x34` going 0 → 1 → 0 around the loading screen.
+
+### The crash at `Coop.dll+0x1FF00`, symbolicated
+
+Rebuilt the exact source tree with `/MAP` and resolved the report from the
+field: the faulting instruction is inside
+`std::_Insertion_sort_unchecked<ConfigVar*>` — the sort in
+`ConfigVars::Refresh` — with panel-and-dump residue on the stack. Every
+`Refresh` call site is on the game thread, so the stack residue points at the
+heap already being corrupt when the sort ran; the log deque and the panel's
+shared strings were mutated from both threads with no lock at the time. Both
+are locked now, and the maps ship with every build so the next report costs
+minutes instead of an evening.
+
 ---
 
 ## 4. Method, and its one rule
