@@ -14,7 +14,11 @@ namespace Coop::Game
 
     void Progression::ResetForNewSession()
     {
-        m_pending           = PendingJump{};
+        {
+            Threading::WriteGuard guard(m_pendingLock);
+            m_pending = PendingJump{};
+        }
+
         m_localJumpPoint    = -1;
         m_localLevel        = 0xFF;
         m_teamJumpPoint     = -1;
@@ -160,6 +164,8 @@ namespace Coop::Game
     void Progression::SchedulePull(int jumpPoint, uint8_t level,
                                    const std::string& reason, bool resetHitman)
     {
+        Threading::WriteGuard guard(m_pendingLock);
+
         // A pull that is already going somewhere at least as far ahead stands.
         if (m_pending.active && m_pending.level == level && m_pending.jumpPoint >= jumpPoint)
         {
@@ -189,6 +195,8 @@ namespace Coop::Game
                 m_deathPending = false;
             }
         }
+
+        Threading::WriteGuard guard(m_pendingLock);
 
         if (!m_pending.active)
         {
@@ -235,7 +243,16 @@ namespace Coop::Game
 
     void Progression::CancelPending()
     {
+        Threading::WriteGuard guard(m_pendingLock);
+
         m_pending          = PendingJump{};
         m_pendingConfirmed = false;
+    }
+
+    PendingJump Progression::PendingSnapshot() const
+    {
+        Threading::ReadGuard guard(m_pendingLock);
+
+        return m_pending;
     }
 }

@@ -217,13 +217,14 @@ namespace Coop::Game
         if (!hitman)
         {
             // The player entity is gone, which happens on every scene change.
-            // The vtable we patched belongs to an object that no longer
-            // exists, so let go of it rather than restoring through a dangling
-            // pointer later.
-            m_armed         = false;
-            m_patchedVtable = nullptr;
-            m_originalEntry = nullptr;
-            m_armedFor      = nullptr;
+            // The table stays: it is the class's own vtable in HMA.exe's
+            // .rdata, shared by every instance, and it outlives the object.
+            // Forgetting m_originalEntry here is how a re-arm once recorded
+            // the thunk as the original - which is the thunk calling itself
+            // on the first hit that gets passed through. The bookkeeping is
+            // about the table, so it lives as long as the patch does.
+            m_armed    = false;
+            m_armedFor = nullptr;
 
             return false;
         }
@@ -233,11 +234,9 @@ namespace Coop::Game
             return true;
         }
 
-        // A different player instance means a new scene. Nothing to restore -
-        // the old object is gone - so start clean.
-        m_armed         = false;
-        m_patchedVtable = nullptr;
-        m_originalEntry = nullptr;
+        // A different player instance means a new scene. The class vtable -
+        // and our patch in it - both survived; only the object is new.
+        m_armed = false;
 
         // The IBaseCharacter sub-object has its own vtable, and it is that one
         // YouGotHit lives in. Casting through the class hierarchy is what
@@ -315,6 +314,29 @@ namespace Coop::Game
             }
         }
 
+        // Already ours. The table is per-class and survives every scene
+        // change, so a re-arm on a new player object finds the thunk still
+        // sitting in the slot. Recording it as the original would make the
+        // pass-through path call itself forever; reusing the entry we saved
+        // when the patch first went in is the whole reason it is still saved.
+        if (vtable[slot] == reinterpret_cast<void*>(&YouGotHitThunk))
+        {
+            if (m_patchedVtable == vtable && m_originalEntry)
+            {
+                m_patchedSlot = slot;
+                m_armed       = true;
+                m_diagnostic  = "damage interception re-armed - the class "
+                                "table was still patched from the last scene";
+
+                return true;
+            }
+
+            m_diagnostic = "the slot already holds this mod's thunk but the "
+                           "original entry is lost - leaving the table alone";
+
+            return false;
+        }
+
         // The IComponentInterface fingerprint: AddRef and Release fold onto one
         // address. If slots 2 and 3 differ, either this is not an
         // IComponentInterface-derived vtable or the layout has shifted - and in
@@ -382,7 +404,10 @@ namespace Coop::Game
             ServiceRagdoll();
         }
 
-        if (m_armed && m_patchedVtable && m_originalEntry)
+        // Not gated on m_armed: between a scene change and the next re-arm the
+        // patch is still in the class table while m_armed is false, and this
+        // is the only thing that ever takes it back out.
+        if (m_patchedVtable && m_originalEntry)
         {
             DWORD previousProtection = 0;
 
@@ -408,6 +433,20 @@ namespace Coop::Game
         m_armedFor        = nullptr;
     }
 
+    std::string DownedState::ImmunityNote() const
+    {
+        Threading::ReadGuard guard(m_immunityNoteLock);
+
+        return m_immunityNote;
+    }
+
+    void DownedState::SetImmunityNote(std::string note)
+    {
+        Threading::WriteGuard guard(m_immunityNoteLock);
+
+        m_immunityNote = std::move(note);
+    }
+
     void DownedState::ApplyEngineImmunity(bool enable)
     {
         // The backstop, not the mechanism. The vtable patch catches ordinary
@@ -426,7 +465,7 @@ namespace Coop::Game
                     m_immunityPrevious;
 
                 m_immunityApplied = false;
-                m_immunityNote    = "god-mode flag restored";
+                SetImmunityNote("god-mode flag restored");
             }
 
             return;
@@ -434,7 +473,7 @@ namespace Coop::Game
 
         if (!m_settings.alsoUseEngineImmunity)
         {
-            m_immunityNote = "engine backstop off - only intercepted damage is caught";
+            SetImmunityNote("engine backstop off - only intercepted damage is caught");
             return;
         }
 
@@ -453,10 +492,10 @@ namespace Coop::Game
         // else happens to live at it.
         if (GameOffsets::GetBuild() != GameOffsets::Build::Steam)
         {
-            m_immunityNote = std::format(
+            SetImmunityNote(std::format(
                 "engine backstop off on the {} build - the god-mode address is "
                 "only known for Steam. Falls and drowning still kill you.",
-                GameOffsets::GetBuildName());
+                GameOffsets::GetBuildName()));
 
             return;
         }
@@ -465,7 +504,7 @@ namespace Coop::Game
 
         if (!BuildInfo::Get().Contains(flag))
         {
-            m_immunityNote = "god-mode flag is outside HMA.exe - not writing";
+            SetImmunityNote("god-mode flag is outside HMA.exe - not writing");
             return;
         }
 
@@ -475,9 +514,9 @@ namespace Coop::Game
 
         if (previous != 0 && previous != 1)
         {
-            m_immunityNote = std::format(
+            SetImmunityNote(std::format(
                 "god-mode flag reads {} rather than 0 or 1 - not writing to it",
-                previous);
+                previous));
 
             return;
         }
@@ -487,9 +526,9 @@ namespace Coop::Game
         m_immunityApplied  = true;
         m_immunityRefused  = false;
 
-        m_immunityNote = previous == 1
+        SetImmunityNote(previous == 1
             ? "god-mode flag was already set - left on"
-            : "god-mode flag set, so falls and scripted kills cannot end the run";
+            : "god-mode flag set, so falls and scripted kills cannot end the run");
     }
 
     bool DownedState::DamageFromHit(const void* hitInfo, float& outDamage) const

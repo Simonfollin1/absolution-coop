@@ -38,6 +38,12 @@ namespace Coop::Game
         void Nudge(float yawDelta, float pitchDelta, float distanceDelta);
 
     private:
+        // The player whose input Enter() switched off. Leave() must only
+        // switch input back on for that same object: after a scene change the
+        // new player never had DisableBindings called, and enabling it there
+        // unbalances a counter this mod never touched.
+        void* m_bindingsDisabledFor = nullptr;
+
         bool  m_active   = false;
         float m_yaw      = 0.f;
         float m_pitch    = 0.35f;

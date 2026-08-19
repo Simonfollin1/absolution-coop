@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <string>
 
+#include "Threading/Lock.h"
+
 class ZHitman5;
 
 namespace Coop::Game
@@ -167,8 +169,10 @@ namespace Coop::Game
         const std::string& Diagnostic() const { return m_diagnostic; }
 
         // What the engine-level backstop actually managed to do, which is not
-        // the same question as whether the vtable patch armed.
-        const std::string& ImmunityNote() const { return m_immunityNote; }
+        // the same question as whether the vtable patch armed. A copy: the
+        // panel reads this inside Present and the game thread reassigns it on
+        // every arm, so a reference would dangle across the swap.
+        std::string ImmunityNote() const;
 
         // Called from the replacement vtable entry. Public because the thunk
         // is a free function; not part of the interface anyone else should use.
@@ -269,8 +273,12 @@ namespace Coop::Game
         bool        m_immunityRefused  = false;
         int         m_immunityPrevious = 0;
 
+        void SetImmunityNote(std::string note);
+
         std::string m_diagnostic;
-        std::string m_immunityNote;
+
+        mutable Threading::Lock m_immunityNoteLock;
+        std::string             m_immunityNote;
     };
 
     // The one instance the vtable thunk dispatches to. There is exactly one

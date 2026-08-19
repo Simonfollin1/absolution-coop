@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <string>
 
+#include "Threading/Lock.h"
+
 namespace Coop::Game
 {
     // The player's real health, read straight out of the game.
@@ -46,8 +48,11 @@ namespace Coop::Game
         // and unlike the interception, it sees every kind of damage.
         float LastDrop() const { return m_lastDrop; }
 
-        // Where the values were read from, for the log and the panel.
-        const std::string& Note() const { return m_note; }
+        // Where the values were read from, for the log and the panel. A copy:
+        // Update() reassigns the string every frame on the game thread, and
+        // the panel reads it inside Present. A reference would hand the render
+        // thread a buffer that is freed forty times a second.
+        std::string Note() const;
 
         // Writes the value the ring is drawn from.
         //
@@ -82,6 +87,8 @@ namespace Coop::Game
         uintptr_t HealthObject() const { return m_healthObject; }
 
     private:
+        void SetNote(std::string note);
+
         bool      m_readable     = false;
         float     m_current      = -1.f;
         float     m_previous     = -1.f;
@@ -90,6 +97,7 @@ namespace Coop::Game
         uintptr_t m_healthObject = 0;
         float     m_lastWritten  = 0.f;
 
-        std::string m_note;
+        mutable Threading::Lock m_noteLock;
+        std::string             m_note;
     };
 }

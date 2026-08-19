@@ -92,6 +92,8 @@ namespace Coop::Game
             if (ZHM5InputControl* inputControl = hitman->GetInputControl())
             {
                 inputControl->DisableBindings();
+
+                m_bindingsDisabledFor = hitman;
             }
         }
 
@@ -128,13 +130,22 @@ namespace Coop::Game
             destination.GetRawPointer()->SetSource(engineAppCommon.GetMainCamera().GetEntityRef());
         }
 
+        // Only undo a disable this camera actually did, and only on the
+        // object it did it to. A scene change replaces the player; the new
+        // one's input was never touched, and the old one's counter died with
+        // it.
         if (ZHitman5* hitman = LevelManager ? LevelManager->GetHitman().GetRawPointer() : nullptr)
         {
-            if (ZHM5InputControl* inputControl = hitman->GetInputControl())
+            if (m_bindingsDisabledFor == hitman)
             {
-                inputControl->EnableBindings();
+                if (ZHM5InputControl* inputControl = hitman->GetInputControl())
+                {
+                    inputControl->EnableBindings();
+                }
             }
         }
+
+        m_bindingsDisabledFor = nullptr;
     }
 
     void Spectator::Nudge(float yawDelta, float pitchDelta, float distanceDelta)

@@ -44,6 +44,12 @@ namespace Coop::Game
         // Puts back precisely what was there. Safe when nothing was suppressed.
         void Restore();
 
+        // Forgets the saved values without writing anything back. For a scene
+        // change: the new scene re-initialised the configuration itself, and
+        // restoring the old scene's numbers over it would stomp fresh state
+        // with stale.
+        void Abandon();
+
         bool Suppressed() const { return m_suppressed; }
 
         const std::string& Note() const { return m_note; }

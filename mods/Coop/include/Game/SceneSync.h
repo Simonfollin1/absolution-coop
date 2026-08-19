@@ -71,6 +71,12 @@ namespace Coop::Game
         // owns everything that happens next - loading screen included.
         static bool Commit(std::string& error);
 
+        // Whether the engine is already running a transition of its own - the
+        // player restarting a checkpoint from the pause menu while a level
+        // streams in, say. Committing over one would overwrite parameters the
+        // engine is mid-way through consuming, so the caller waits it out.
+        static bool EngineMidTransition();
+
         // Clears the transition flag this mod set, for when the watchdog
         // decides nothing is going to happen.
         static void AbortEngineTransition();

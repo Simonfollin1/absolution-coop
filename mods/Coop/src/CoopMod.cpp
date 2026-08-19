@@ -680,7 +680,11 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
         m_lastSceneStage = stage;
     }
 
-    if (Game::SceneSync::IsReadyToCommit())
+    // Committing waits out any transition the engine is already running - the
+    // player restarting a checkpoint from the pause menu while the level
+    // streamed in, say. Writing the parameters mid-consumption would hand the
+    // engine half of one destination and half of another.
+    if (Game::SceneSync::IsReadyToCommit() && !Game::SceneSync::EngineMidTransition())
     {
         // Let go of everything the mod is holding that points into the world
         // about to be destroyed. The damage hook is a patched entry in the
@@ -694,7 +698,8 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
 
         std::string error;
 
-        m_sceneLoadWatch = 30.f;
+        m_sceneLoadWatch     = 30.f;
+        m_sceneLoadPlayerWas = LevelManager ? LevelManager->GetHitman().GetRawPointer() : nullptr;
 
         if (!Game::SceneSync::Commit(error))
         {
@@ -724,55 +729,91 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
     // does not.
     if (m_sceneLoadWatch > 0.f)
     {
-        m_sceneLoadWatch -= deltaSeconds;
+        // Arrival is the player entity being rebuilt, with the chapter byte as
+        // a second witness. The byte alone is not enough: half the campaign's
+        // scenes share a chapter with their neighbours, and on an unrecognised
+        // build it never moves at all - and a watchdog that cannot see an
+        // arrival ends up tearing down a level somebody is standing in.
+        ZHitman5* nowPlayer =
+            LevelManager ? LevelManager->GetHitman().GetRawPointer() : nullptr;
 
-        if (m_probe.LocalState().level != m_sceneLoadFromLvl)
+        const bool chapterMoved  = m_probe.LocalState().level != m_sceneLoadFromLvl;
+        const bool playerSwapped = nowPlayer != nullptr &&
+                                   static_cast<void*>(nowPlayer) != m_sceneLoadPlayerWas;
+
+        if (chapterMoved || playerSwapped)
         {
             m_sceneLoadWatch = 0.f;
 
-            Diag::Log("scene: the load happened - chapter %u now",
-                      m_probe.LocalState().level);
+            Diag::Log("scene: the load happened - %s",
+                      chapterMoved ? "the chapter moved" : "the player was rebuilt");
 
             Game::SceneSync::ConfirmArrived();
         }
-        else if (m_sceneLoadWatch <= 0.f)
+        else if (GameOffsets::IsLoading())
         {
-            // The flag route went nowhere. Before giving up, run the whole
-            // pipeline by hand - the resources are still resident and the
-            // vtable slots are verified against known anchors. One press, two
-            // attempts, and the log says which one worked.
-            std::string fallbackError;
-
-            if (Game::SceneSync::TryFallback(fallbackError))
+            // The engine is visibly mid-load. However long the drive takes is
+            // however long it takes - the countdown holds rather than expiring
+            // into a teardown of a level that is half built, and the ten
+            // seconds are the grace left once the loading screen goes away.
+            if (m_sceneLoadWatch < 10.f)
             {
-                m_sceneLoadWatch = 30.f;
-
-                AddLogLine("The engine ignored the handover - ran its pipeline "
-                           "by hand instead, watching again");
-
-                return;
+                m_sceneLoadWatch = 10.f;
             }
+        }
+        else
+        {
+            m_sceneLoadWatch -= deltaSeconds;
 
-            Game::SceneSync::SetSceneName(m_sceneLoadWasIn);
-            Game::SceneSync::AbortEngineTransition();
-            Game::SceneSync::Cancel();
-
-            const char* note =
-                "the level did not load either way - the log has every step "
-                "and the vtable dump";
-
+            if (m_sceneLoadWatch <= 0.f)
             {
-                Threading::WriteGuard guard(m_sceneShareLock);
+                // The flag route went nowhere. Before giving up, run the whole
+                // pipeline by hand - the resources are still resident and the
+                // vtable slots are verified against known anchors. One press,
+                // two attempts, and the log says which one worked.
+                //
+                // The same letting-go as the commit path first: the fallback
+                // opens with ClearScene, and the re-armed damage hook and the
+                // spectator camera both point into the world it destroys.
+                Game::TheDownedState().Disarm();
+                Game::TheDownedState().ResetForNewSession();
 
-                m_publishedScene = m_sceneLoadWasIn;
-                m_sceneError     = note;
+                m_spectator.Leave();
+
+                std::string fallbackError;
+
+                if (Game::SceneSync::TryFallback(fallbackError))
+                {
+                    m_sceneLoadWatch = 30.f;
+
+                    AddLogLine("The engine ignored the handover - ran its pipeline "
+                               "by hand instead, watching again");
+
+                    return;
+                }
+
+                Game::SceneSync::SetSceneName(m_sceneLoadWasIn);
+                Game::SceneSync::AbortEngineTransition();
+                Game::SceneSync::Cancel();
+
+                const std::string note = std::format(
+                    "the level did not load either way ({}) - the log has "
+                    "every step and the vtable dump",
+                    fallbackError.empty() ? "no reason given" : fallbackError);
+
+                {
+                    Threading::WriteGuard guard(m_sceneShareLock);
+
+                    m_publishedScene = m_sceneLoadWasIn;
+                    m_sceneError     = note;
+                }
+
+                AddLogLine(note);
+
+                Diag::Log("scene: no transition thirty seconds after the "
+                          "handover, name put back to %s",
+                          m_sceneLoadWasIn.empty() ? "(menu)" : m_sceneLoadWasIn.c_str());
             }
-
-            AddLogLine(note);
-
-            Diag::Log("scene: no transition thirty seconds after CreateScene, "
-                      "name put back to %s",
-                      m_sceneLoadWasIn.empty() ? "(menu)" : m_sceneLoadWasIn.c_str());
         }
     }
 
@@ -780,6 +821,27 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
     Game::SceneSync::TraceTransitionWindow();
     TraceKeys();
     AutoDumpWhenReady(deltaSeconds);
+
+    // The dump button, serviced here so the walk over the engine's
+    // configuration happens on the thread that owns the engine. The button
+    // itself runs inside Present and only raises its hand.
+    if (m_dumpRequested.exchange(false))
+    {
+        std::string error;
+
+        const std::string path = Game::WriteDump(
+            m_configVars, m_probe, m_bindingExpression, SnapshotLog(), error);
+
+        {
+            Threading::WriteGuard guard(m_logLock);
+
+            m_lastDumpPath  = path;
+            m_lastDumpError = error;
+        }
+
+        AddLogLine(path.empty() ? std::format("Dump failed: {}", error)
+                                : std::format("Wrote {}", path));
+    }
 
     m_passThroughWaited += deltaSeconds;
     UpdatePlayerDiff();
@@ -1245,7 +1307,11 @@ void CoopMod::AutoDumpWhenReady(float deltaSeconds)
         return;
     }
 
-    m_lastDumpPath = path;
+    {
+        Threading::WriteGuard guard(m_logLock);
+
+        m_lastDumpPath = path;
+    }
 
     Diag::Log("automatic dump written to %s", path.c_str());
 
@@ -1305,9 +1371,16 @@ void CoopMod::UpdatePlayerDiff()
             downed.ArmPassThrough(0);
 
             m_awaitingPassThrough = false;
-            m_playerDiffNote      = "nothing hit you within a minute - disarmed";
 
-            AddLogLine(m_playerDiffNote);
+            const char* note = "nothing hit you within a minute - disarmed";
+
+            {
+                Threading::WriteGuard guard(m_logLock);
+
+                m_playerDiffNote = note;
+            }
+
+            AddLogLine(note);
         }
 
         return;
@@ -1324,8 +1397,15 @@ void CoopMod::UpdatePlayerDiff()
 
     if (read == 0 || m_playerBefore.size() != kPlayerSnapshotBytes)
     {
-        m_playerDiffNote = "could not read the player object on both sides of the hit";
-        AddLogLine(m_playerDiffNote);
+        const char* note = "could not read the player object on both sides of the hit";
+
+        {
+            Threading::WriteGuard guard(m_logLock);
+
+            m_playerDiffNote = note;
+        }
+
+        AddLogLine(note);
 
         return;
     }
@@ -1345,9 +1425,15 @@ void CoopMod::UpdatePlayerDiff()
         }
     }
 
-    m_playerDiffNote = std::format("{} dwords changed across one hit", m_playerDeltas.size());
+    std::string note = std::format("{} dwords changed across one hit", m_playerDeltas.size());
 
-    AddLogLine(m_playerDiffNote);
+    {
+        Threading::WriteGuard guard(m_logLock);
+
+        m_playerDiffNote = note;
+    }
+
+    AddLogLine(note);
 
     Diag::Log("player diff: %zu dwords changed across one engine-visible hit",
               m_playerDeltas.size());
@@ -1432,7 +1518,10 @@ void CoopMod::PumpEvents()
                 Threading::WriteGuard guard(m_sceneShareLock);
 
                 m_peerScene           = event.text;
-                m_peerSceneCheckpoint = static_cast<int>(event.x);
+
+                // Off the wire, so bounded here - the engine's checkpoint
+                // machinery indexes with it and cannot be guarded.
+                m_peerSceneCheckpoint = std::clamp(static_cast<int>(event.x), 0, 63);
                 m_peerSceneOwner      = name;
                 m_peerSceneOwnerId    = event.originPeerId;
             }
@@ -1507,7 +1596,7 @@ void CoopMod::UpdateSceneTransition()
         // writing them back over whatever the new level set up.
         if (m_perception.Suppressed())
         {
-            m_perception.Restore();
+            m_perception.Abandon();
             AddLogLine("Level changed while down - perception left as the new scene set it");
         }
     }
@@ -1855,7 +1944,7 @@ void CoopMod::RenderHudOverlay()
 
     const Net::SessionStatus status = m_session.Status();
 
-    const Game::PendingJump& pending = m_progression.Pending();
+    const Game::PendingJump pending = m_progression.PendingSnapshot();
     const bool               downed  = Game::TheDownedState().IsDowned();
 
     if (status.mode == Net::SessionMode::Offline && !downed && !pending.active)
@@ -2506,20 +2595,29 @@ void CoopMod::RenderDiagnosticsTab()
 
     if (ImGui::Button("Dump now", ImVec2(150.f, 0.f)))
     {
-        m_lastDumpPath = Game::WriteDump(m_configVars, m_probe, m_bindingExpression,
-                                         SnapshotLog(), m_lastDumpError);
-
-        AddLogLine(m_lastDumpPath.empty()
-            ? std::format("Dump failed: {}", m_lastDumpError)
-            : std::format("Wrote {}", m_lastDumpPath));
+        // Raised here, written on the game thread. The dump walks the whole
+        // configuration chain and reads engine memory, and this button runs
+        // inside Present - the crash the friend hit on the first joint test
+        // was exactly this collision.
+        m_dumpRequested = true;
     }
 
     ImGui::SameLine();
     ImGui::TextDisabled("one is written by itself six seconds into every level");
 
-    if (!m_lastDumpPath.empty())
     {
-        ImGui::TextDisabled("%s", m_lastDumpPath.c_str());
+        std::string lastDumpPath;
+
+        {
+            Threading::ReadGuard guard(m_logLock);
+
+            lastDumpPath = m_lastDumpPath;
+        }
+
+        if (!lastDumpPath.empty())
+        {
+            ImGui::TextDisabled("%s", lastDumpPath.c_str());
+        }
     }
 
     // The one research probe still worth a button: it is the only way to find
@@ -2536,9 +2634,11 @@ void CoopMod::RenderDiagnosticsTab()
     {
         m_playerBefore.assign(kPlayerSnapshotBytes, 0);
 
+        const char* note = nullptr;
+
         if (downed.SnapshotPlayer(m_playerBefore.data(), kPlayerSnapshotBytes) == 0)
         {
-            m_playerDiffNote = "could not read the player object - not arming";
+            note = "could not read the player object - not arming";
         }
         else
         {
@@ -2546,10 +2646,17 @@ void CoopMod::RenderDiagnosticsTab()
 
             m_awaitingPassThrough = true;
             m_passThroughWaited   = 0.f;
-            m_playerDiffNote      = "armed - go and get shot once";
+
+            note = "armed - go and get shot once";
         }
 
-        AddLogLine(m_playerDiffNote);
+        {
+            Threading::WriteGuard guard(m_logLock);
+
+            m_playerDiffNote = note;
+        }
+
+        AddLogLine(note);
     }
 
     ImGui::EndDisabled();
@@ -2563,13 +2670,26 @@ void CoopMod::RenderDiagnosticsTab()
             downed.ArmPassThrough(0);
 
             m_awaitingPassThrough = false;
-            m_playerDiffNote      = "disarmed";
+
+            Threading::WriteGuard guard(m_logLock);
+
+            m_playerDiffNote = "disarmed";
         }
     }
 
-    if (!m_playerDiffNote.empty())
     {
-        ImGui::TextDisabled("%s", m_playerDiffNote.c_str());
+        std::string diffNote;
+
+        {
+            Threading::ReadGuard guard(m_logLock);
+
+            diffNote = m_playerDiffNote;
+        }
+
+        if (!diffNote.empty())
+        {
+            ImGui::TextDisabled("%s", diffNote.c_str());
+        }
     }
 
     ImGui::SeparatorText("Log");

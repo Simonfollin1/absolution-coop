@@ -98,8 +98,10 @@ namespace Coop::Game
                              const SVector3& localPosition,
                              uint8_t localLevel, uint8_t localSection)
     {
-        m_views.clear();
-        m_views.reserve(peers.size());
+        // Built off to the side and swapped in at the end, so the lock is held
+        // for a pointer exchange rather than for the whole rebuild.
+        std::vector<AvatarView> views;
+        views.reserve(peers.size());
 
         const uint64_t nowMs = GetTickCount64();
 
@@ -126,7 +128,7 @@ namespace Coop::Game
 
             if (!hasPosition || peer.currentReceivedMs == 0)
             {
-                m_views.push_back(std::move(view));
+                views.push_back(std::move(view));
                 continue;
             }
 
@@ -175,11 +177,15 @@ namespace Coop::Game
 
             view.distance = std::sqrt(dx * dx + dy * dy + dz * dz);
 
-            m_views.push_back(std::move(view));
+            views.push_back(std::move(view));
         }
 
-        std::sort(m_views.begin(), m_views.end(),
+        std::sort(views.begin(), views.end(),
             [](const AvatarView& a, const AvatarView& b) { return a.peerId < b.peerId; });
+
+        Threading::WriteGuard guard(m_lock);
+
+        m_views.swap(views);
     }
 
     void PeerAvatars::AddMarker(const SVector3& position, const std::string& label,
@@ -189,11 +195,6 @@ namespace Coop::Game
         // a network connection and nothing stops somebody leaning on it.
         constexpr size_t kMaxMarkers = 24;
 
-        if (m_markers.size() >= kMaxMarkers)
-        {
-            m_markers.erase(m_markers.begin());
-        }
-
         WorldMarker marker;
 
         marker.position  = position;
@@ -201,11 +202,20 @@ namespace Coop::Game
         marker.peerId    = peerId;
         marker.remaining = m_settings.markerSeconds;
 
+        Threading::WriteGuard guard(m_lock);
+
+        if (m_markers.size() >= kMaxMarkers)
+        {
+            m_markers.erase(m_markers.begin());
+        }
+
         m_markers.push_back(std::move(marker));
     }
 
     void PeerAvatars::TickMarkers(float deltaSeconds)
     {
+        Threading::WriteGuard guard(m_lock);
+
         for (WorldMarker& marker : m_markers)
         {
             marker.remaining -= deltaSeconds;
@@ -217,11 +227,26 @@ namespace Coop::Game
             m_markers.end());
     }
 
-    void PeerAvatars::DrawMarkers(const DirectXRenderer& renderer) const
+    std::vector<WorldMarker> PeerAvatars::Markers() const
+    {
+        Threading::ReadGuard guard(m_lock);
+
+        return m_markers;
+    }
+
+    std::vector<AvatarView> PeerAvatars::Views() const
+    {
+        Threading::ReadGuard guard(m_lock);
+
+        return m_views;
+    }
+
+    void PeerAvatars::DrawMarkers(const DirectXRenderer& renderer,
+                                  const std::vector<WorldMarker>& markers) const
     {
         auto& mutableRenderer = const_cast<DirectXRenderer&>(renderer);
 
-        for (const WorldMarker& marker : m_markers)
+        for (const WorldMarker& marker : markers)
         {
             SVector4 colour = ColourForPeer(marker.peerId, false);
 
@@ -273,9 +298,22 @@ namespace Coop::Game
             return;
         }
 
+        // Snapshots, taken once. The game thread replaces both containers
+        // whenever it likes; from here down everything works on this frame's
+        // copy and cannot be pulled out from under.
+        std::vector<WorldMarker> markers;
+        std::vector<AvatarView>  views;
+
+        {
+            Threading::ReadGuard guard(m_lock);
+
+            markers = m_markers;
+            views   = m_views;
+        }
+
         if (m_settings.drawMarkers)
         {
-            DrawMarkers(*renderer);
+            DrawMarkers(*renderer, markers);
         }
 
         // Instinct is the game's see-through-walls view and it already draws
@@ -289,7 +327,7 @@ namespace Coop::Game
             return;
         }
 
-        for (const AvatarView& view : m_views)
+        for (const AvatarView& view : views)
         {
             // Somebody in another chapter has a position, but it is a position
             // in a level we are not in. Drawing it would be worse than useless.

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <string>
@@ -170,9 +171,17 @@ private:
     // A load asked for from the panel and carried out on the game thread. The
     // button runs inside Present, and rebuilding the world from there with a
     // frame half drawn is what crashed the first person who pressed it.
-    std::string m_sceneLoadRequest;
-    int         m_sceneLoadCheckpoint = -1;
-    bool        m_sceneLoadPending    = false;
+    //
+    // The flag is atomic because both threads read it bare - the strings stay
+    // under the lock.
+    std::string       m_sceneLoadRequest;
+    int               m_sceneLoadCheckpoint = -1;
+    std::atomic<bool> m_sceneLoadPending{ false };
+
+    // Same shape for the dump button: pressed inside Present, written on the
+    // game thread. The dump walks sixteen hundred engine config entries and
+    // reads engine memory, none of which belongs inside a frame being drawn.
+    std::atomic<bool> m_dumpRequested{ false };
 
     // For noticing the stage flip to Failed, which happens inside
     // SceneSync::Update and returns no error string.
@@ -181,8 +190,15 @@ private:
     // Watching whether the load actually happened. Writing the scene name makes
     // the game claim to be somewhere it is not, so a failed attempt has to be
     // taken back or the mod believes it arrived.
+    //
+    // Arrival is the player entity being replaced, not just the chapter byte
+    // moving: half the campaign's scenes share a chapter with their
+    // neighbours (l04b-e, l05a-c...), and on an unrecognised build the byte
+    // never moves at all - and a watchdog that cannot see an arrival would
+    // tear down a level somebody is standing in.
     std::string m_sceneLoadWasIn;
     uint8_t     m_sceneLoadFromLvl = 0xFF;
+    void*       m_sceneLoadPlayerWas = nullptr;
     float       m_sceneLoadWatch   = 0.f;
 
     char m_hostAddress[64] = "127.0.0.1:47474";
@@ -194,7 +210,9 @@ private:
     // Written by AddLogLine from both threads - the panel's buttons run on
     // the render thread and PumpEvents runs on the game thread - and read by
     // the panel every frame. A deque being pushed while being iterated is heap
-    // corruption on a timer, so every touch goes through the lock.
+    // corruption on a timer, so every touch goes through the lock. The same
+    // lock covers the research strings below (m_lastDumpPath, m_lastDumpError,
+    // m_playerDiffNote), which cross the same two threads at the same rate.
     Threading::Lock         m_logLock;
     std::deque<std::string> m_log;
 
@@ -239,6 +257,9 @@ private:
 
     // --- Research ---------------------------------------------------------
 
+    // Written on the game thread, shown in the panel on the render thread -
+    // so these three strings ride under m_logLock, same as the log they
+    // usually land in anyway.
     std::string m_lastDumpPath;
     std::string m_lastDumpError;
 

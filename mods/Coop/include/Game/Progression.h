@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "Net/Protocol.h"
+#include "Threading/Lock.h"
 
 namespace Coop::Game
 {
@@ -92,7 +93,15 @@ namespace Coop::Game
         // happen now, filling in what to jump to.
         bool Update(float deltaSeconds, int& outJumpPoint, bool& outResetHitman);
 
+        // Game thread only. The struct holds a string that the observers
+        // reassign, so a reference is safe exactly where the writers run and
+        // nowhere else.
         const PendingJump& Pending() const { return m_pending; }
+
+        // For the overlay, which runs inside Present while the game thread is
+        // free to replace the whole struct. A copy under the lock is the only
+        // form that crosses.
+        PendingJump PendingSnapshot() const;
 
         // The player pressed the follow key, or dismissed the prompt.
         void ConfirmPending();
@@ -109,7 +118,12 @@ namespace Coop::Game
         void SchedulePull(int jumpPoint, uint8_t level, const std::string& reason, bool resetHitman);
 
         ProgressionSettings m_settings;
-        PendingJump         m_pending;
+
+        // Guards m_pending, which is the one piece of this class the render
+        // thread looks at. Writers all live on the game thread; the lock is
+        // for the reason string's buffer, not for ordering.
+        mutable Threading::Lock m_pendingLock;
+        PendingJump             m_pending;
 
         int     m_localJumpPoint = -1;
         uint8_t m_localLevel     = 0xFF;

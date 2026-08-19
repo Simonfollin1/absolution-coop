@@ -133,4 +133,20 @@ namespace Coop::Game
 
         m_saved.clear();
     }
+
+    void Perception::Abandon()
+    {
+        if (!m_suppressed)
+        {
+            return;
+        }
+
+        m_suppressed = false;
+
+        m_note = std::format(
+            "perception: dropped {} saved switches - the new scene owns its "
+            "own configuration", m_saved.size());
+
+        m_saved.clear();
+    }
 }

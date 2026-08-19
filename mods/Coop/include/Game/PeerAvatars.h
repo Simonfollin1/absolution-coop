@@ -7,6 +7,7 @@
 #include <Glacier/Math/SVector3.h>
 
 #include "Net/Session.h"
+#include "Threading/Lock.h"
 
 namespace Coop::Game
 {
@@ -93,9 +94,14 @@ namespace Coop::Game
         // renderer and the world-to-screen plumbing.
         void AddMarker(const SVector3& position, const std::string& label, uint8_t peerId);
         void TickMarkers(float deltaSeconds);
-        const std::vector<WorldMarker>& Markers() const { return m_markers; }
 
-        const std::vector<AvatarView>& Views() const { return m_views; }
+        // Copies, both of them. The game thread rebuilds these vectors every
+        // frame while the render thread draws from them inside Present, and a
+        // vector reallocating under an iterator is heap corruption - the same
+        // shape as the crash the log lock fixed. A copy of eight avatars is
+        // nothing; a dangling string is everything.
+        std::vector<WorldMarker> Markers() const;
+        std::vector<AvatarView>  Views() const;
 
         // Names arrive from the network, so they are untrusted input on their
         // way to a renderer that throws on a glyph it does not have. Anything
@@ -103,9 +109,15 @@ namespace Coop::Game
         static std::string SanitiseForDisplay(const std::string& text, size_t maxLength);
 
     private:
-        void DrawMarkers(const class DirectXRenderer& renderer) const;
+        void DrawMarkers(const class DirectXRenderer& renderer,
+                         const std::vector<WorldMarker>& markers) const;
 
         AvatarSettings           m_settings;
+
+        // Written by the game thread (Update, AddMarker, TickMarkers), read by
+        // the render thread (Draw3D and the panel). Every touch on either side
+        // holds this.
+        mutable Threading::Lock  m_lock;
         std::vector<AvatarView>  m_views;
         std::vector<WorldMarker> m_markers;
 

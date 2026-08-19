@@ -107,6 +107,20 @@ namespace Coop::Game
         return std::clamp(m_current / m_max, 0.f, 1.f);
     }
 
+    std::string EngineHealth::Note() const
+    {
+        Threading::ReadGuard guard(m_noteLock);
+
+        return m_note;
+    }
+
+    void EngineHealth::SetNote(std::string note)
+    {
+        Threading::WriteGuard guard(m_noteLock);
+
+        m_note = std::move(note);
+    }
+
     void EngineHealth::Update()
     {
         m_readable = false;
@@ -116,7 +130,7 @@ namespace Coop::Game
 
         if (!base || !HUDManager)
         {
-            m_note = "no HUD manager yet";
+            SetNote("no HUD manager yet");
             return;
         }
 
@@ -125,13 +139,13 @@ namespace Coop::Game
         if (!ReadFloatGuarded(reinterpret_cast<uintptr_t>(HUDManager) + kHudCurrentHealth,
                               current))
         {
-            m_note = "could not read the HUD's health field";
+            SetNote("could not read the HUD's health field");
             return;
         }
 
         if (!LooksLikeHealth(current))
         {
-            m_note = std::format("HUD health reads {:.3f}, which is not health", current);
+            SetNote(std::format("HUD health reads {:.3f}, which is not health", current));
             return;
         }
 
@@ -173,10 +187,10 @@ namespace Coop::Game
         m_previous = current;
         m_current  = current;
 
-        m_note = max > 0.f
+        SetNote(max > 0.f
             ? std::format("{:.1f} / {:.1f} from the HUD, maximum via {:08X}",
                           current, max, m_healthObject)
-            : std::format("{:.1f} from the HUD, maximum unreadable", current);
+            : std::format("{:.1f} from the HUD, maximum unreadable", current));
     }
 
     float EngineHealth::ReadRaw() const
@@ -204,7 +218,7 @@ namespace Coop::Game
 
         if (!WriteFloatGuarded(hud + kHudCurrentHealth, value))
         {
-            m_note = "the HUD's health field would not take a write";
+            SetNote("the HUD's health field would not take a write");
             return false;
         }
 

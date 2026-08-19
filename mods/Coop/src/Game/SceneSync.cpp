@@ -18,6 +18,7 @@
 #include <Glacier/Templates/TResourcePtr.h>
 #include <Global.h>
 
+#include "Game/BuildInfo.h"
 #include "Game/SceneSync.h"
 #include "Game/SceneTable.h"
 #include "Diag/Diag.h"
@@ -314,6 +315,80 @@ namespace Coop::Game
         constexpr int kRelStartEntities          = 16;
         constexpr int kRelSetSceneInitParameters = 20;
 
+        // One guarded pipeline step. POD, because it rides through RunGuarded;
+        // the C++ argument objects are built inside the callee, so a fault in
+        // any step is a logged failure rather than a dead game - the same rule
+        // every other engine touch in this file follows.
+        enum FallbackStep
+        {
+            kStepClearScene = 0,
+            kStepPrepareNewScene,
+            kStepSetSceneInitParameters,
+            kStepSetSceneResources,
+            kStepCreateScene,
+            kStepStartEntities,
+        };
+
+        struct FallbackStepContext
+        {
+            void*         context   = nullptr;
+            void*         function  = nullptr;
+            int           step      = 0;
+            const char*   scene     = nullptr;
+            ZResourcePtr* factory   = nullptr;
+            ZResourcePtr* blueprint = nullptr;
+            ZResourcePtr* headerLib = nullptr;
+        };
+
+        void __cdecl DoFallbackStep(void* raw)
+        {
+            auto* call = static_cast<FallbackStepContext*>(raw);
+
+            switch (call->step)
+            {
+            case kStepClearScene:
+                reinterpret_cast<void(__thiscall*)(void*, bool)>(call->function)(
+                    call->context, true);
+                break;
+
+            case kStepPrepareNewScene:
+            case kStepStartEntities:
+                reinterpret_cast<void(__thiscall*)(void*)>(call->function)(call->context);
+                break;
+
+            case kStepSetSceneInitParameters:
+            {
+                SSceneInitParameters initParameters;
+
+                const ZString scenePath(call->scene);
+                const ZString streaming("");
+
+                initParameters.m_SceneResource  = ZString::CopyFrom(scenePath);
+                initParameters.m_StreamingState = ZString::CopyFrom(streaming);
+
+                reinterpret_cast<void(__thiscall*)(void*, const SSceneInitParameters&)>(
+                    call->function)(call->context, initParameters);
+
+                break;
+            }
+
+            case kStepSetSceneResources:
+                reinterpret_cast<void(__thiscall*)(void*, TResourcePtr<IEntityFactory>,
+                                                   TResourcePtr<IEntityBlueprintFactory>,
+                                                   ZResourcePtr)>(call->function)(
+                    call->context,
+                    TResourcePtr<IEntityFactory>(*call->factory),
+                    TResourcePtr<IEntityBlueprintFactory>(*call->blueprint),
+                    *call->headerLib);
+                break;
+
+            case kStepCreateScene:
+                reinterpret_cast<void(__thiscall*)(void*, const ZString&)>(call->function)(
+                    call->context, ZString(""));
+                break;
+            }
+        }
+
         // A ZResourcePtr fetched under guard. Holds raw storage so nothing is
         // constructed unless the engine call actually completed.
         class FetchedPtr
@@ -389,9 +464,11 @@ namespace Coop::Game
             FetchedPtr headerLib;
 
             float waited  = 0.f;
+            bool  mountReady = false; // the library set finished streaming
             bool  fetched = false;   // the three stubs have been requested
             bool  ready   = false;
             bool  fellBack = false;  // the manual pipeline has been tried
+            bool  committed = false; // the engine has been handed the load
         };
 
         Pending* g_pending = nullptr;
@@ -431,13 +508,55 @@ namespace Coop::Game
         {
             g_stage = stage;
 
-            if (g_pending)
+            if (!g_pending)
             {
-                FreeMount(g_pending->library, "the in-flight mount");
-
-                delete g_pending;
-                g_pending = nullptr;
+                return;
             }
+
+            // The stubs hold references into the library's package set, so the
+            // bookkeeping - and its three ZResourcePtrs - is destroyed before
+            // the library is touched, never after.
+            ZDynamicResourceLibrary* library    = g_pending->library;
+            const bool               committed  = g_pending->committed;
+            const bool               mountReady = g_pending->mountReady;
+
+            g_pending->library = nullptr;
+
+            delete g_pending;
+            g_pending = nullptr;
+
+            if (!library)
+            {
+                return;
+            }
+
+            if (committed)
+            {
+                // The engine was asked to build out of this set, and a load
+                // that looks like a failure from here can still be an arrival
+                // the watchdog failed to notice. Once committed, the mount is
+                // never freed on suspicion: it is parked exactly as a
+                // confirmed arrival parks it, and the next load replaces it.
+                FreeMount(g_keptMounted, "the previous level's mount");
+
+                g_keptMounted = library;
+
+                return;
+            }
+
+            if (mountReady)
+            {
+                FreeMount(library, "the in-flight mount");
+
+                return;
+            }
+
+            // Still streaming. The engine's loader keeps a callback registered
+            // on a loading library, and the SDK's destructor cannot deregister
+            // the engine's own delegate - so freeing it here leaves the loader
+            // a pointer into freed memory. Left standing on purpose.
+            Diag::Log("scene: leaving a half-streamed mount resident rather "
+                      "than freeing it under the loader");
         }
     }
 
@@ -655,6 +774,8 @@ namespace Coop::Game
                 return;
             }
 
+            pending.mountReady = true;
+
             Diag::Log("scene: library set resident after %.1f s - requesting the scene's resources",
                       pending.waited);
 
@@ -785,6 +906,17 @@ namespace Coop::Game
         parameters.bUseSaveGame     = false;
         parameters.bGameCompleted   = false;
 
+        // The tokens still hold whatever the player's last menu-driven start
+        // put in them - a bonus weapon, a bonus outfit, a named checkpoint
+        // that may not exist in the destination. This is a plain story-mode
+        // start, so all three say so.
+        parameters.BonusWeapon.m_iValue        = 0;
+        parameters.BonusWeapon.m_bValid        = false;
+        parameters.BonusOutfit.m_iValue        = 0;
+        parameters.BonusOutfit.m_bValid        = false;
+        parameters.sStartCheckpointID.m_iValue = 0;
+        parameters.sStartCheckpointID.m_bValid = false;
+
         Diag::Log("scene: parameters written - %s at checkpoint %d, storymode",
                   pending.entry->scene, pending.checkpoint);
 
@@ -828,6 +960,8 @@ namespace Coop::Game
         // Everything stays alive: the mount because the engine is about to
         // resolve out of it, the three stubs because the fallback needs them
         // if the engine never picks the flag up. Released on arrival.
+        pending.committed = true;
+
         g_stage = Stage::Committed;
 
         return true;
@@ -842,14 +976,11 @@ namespace Coop::Game
 
         Diag::Log("scene: arrival confirmed - releasing the in-flight bookkeeping");
 
-        // The new world builds out of the libraries this mount holds resident,
-        // so it survives until the transition after this one replaces it.
-        FreeMount(g_keptMounted, "the previous level's mount");
-
-        g_keptMounted      = g_pending->library;
-        g_pending->library = nullptr;
-
-        Finish(Stage::Committed);
+        // Finish parks the mount - the load was committed, so the new world is
+        // building out of it - and Idle is what hands the button back. Leaving
+        // the stage at Committed here is what once disabled Go there for the
+        // rest of the session after the first successful follow.
+        Finish(Stage::Idle);
     }
 
     bool SceneSync::TryFallback(std::string& error)
@@ -906,60 +1037,111 @@ namespace Coop::Game
 
         DumpVtable(map);
 
-        using ClearSceneFn       = void(__thiscall*)(void*, bool);
-        using PrepareNewSceneFn  = void(__thiscall*)(void*);
-        using CreateSceneZFn     = void(__thiscall*)(void*, const ZString&);
-        using SetSceneInitFn     = void(__thiscall*)(void*, const SSceneInitParameters&);
-        using SetSceneResFn      = void(__thiscall*)(void*, TResourcePtr<IEntityFactory>,
-                                                     TResourcePtr<IEntityBlueprintFactory>,
-                                                     ZResourcePtr);
-        using StartEntitiesFn    = void(__thiscall*)(void*);
-
-        const auto slot = [&](int rel) { return map.table[map.clearScene + rel]; };
-
-        // Logged before each step: if the game dies inside one, the last line
-        // names the call that did it.
-        Diag::Log("scene: fallback - ClearScene(true)");
-
-        reinterpret_cast<ClearSceneFn>(map.table[map.clearScene])(context, true);
-
-        Diag::Log("scene: fallback - PrepareNewScene");
-
-        reinterpret_cast<PrepareNewSceneFn>(slot(kRelPrepareNewScene))(context);
-
-        Diag::Log("scene: fallback - SetSceneInitParameters(%s)", pending.entry->scene);
-
-        SSceneInitParameters initParameters;
-
+        // The counted slots have to fit inside the table that was actually
+        // scanned; an anchor that deep means the layout is not the one the
+        // counts were made against.
+        if (map.clearScene + kRelSetSceneInitParameters >= static_cast<int>(kVtableScan))
         {
-            const ZString scenePath(pending.entry->scene);
-            const ZString streaming("");
+            error = "the anchor sits too deep in the vtable for the counted slots";
 
-            initParameters.m_SceneResource  = ZString::CopyFrom(scenePath);
-            initParameters.m_StreamingState = ZString::CopyFrom(streaming);
+            Diag::Log("scene: fallback refused - ClearScene at slot %d leaves "
+                      "no room for +%d", map.clearScene, kRelSetSceneInitParameters);
+
+            return false;
         }
 
-        reinterpret_cast<SetSceneInitFn>(slot(kRelSetSceneInitParameters))(context, initParameters);
+        // The whole pipeline, in the order ZEngineAppCommon::LoadScene runs it
+        // per the dev build's symbols. Each step is logged before it runs, so
+        // a fault names the call that did it, and each call goes through the
+        // same guard as every other engine touch in this file.
+        struct Step
+        {
+            int         step;
+            int         slotIndex;
+            const char* name;
+        };
 
-        Diag::Log("scene: fallback - SetSceneResources");
+        const Step steps[] = {
+            { kStepClearScene,             map.clearScene,                                 "ClearScene(true)" },
+            { kStepPrepareNewScene,        map.clearScene + kRelPrepareNewScene,           "PrepareNewScene" },
+            { kStepSetSceneInitParameters, map.clearScene + kRelSetSceneInitParameters,    "SetSceneInitParameters" },
+            { kStepSetSceneResources,      map.clearScene + kRelSetSceneResources,         "SetSceneResources" },
+            { kStepCreateScene,            map.createScene,                                "CreateScene(\"\")" },
+            { kStepStartEntities,          map.clearScene + kRelStartEntities,             "StartEntities" },
+        };
 
-        reinterpret_cast<SetSceneResFn>(slot(kRelSetSceneResources))(
-            context,
-            TResourcePtr<IEntityFactory>(pending.factory.Get()),
-            TResourcePtr<IEntityBlueprintFactory>(pending.blueprint.Get()),
-            pending.headerLib.Get());
+        // Every target has to be code inside HMA.exe before anything is
+        // called. Checked up front, so a wrong slot refuses the whole attempt
+        // instead of failing three steps into a teardown.
+        const BuildInfo& build = BuildInfo::Get();
 
-        Diag::Log("scene: fallback - CreateScene(\"\")");
+        for (const Step& step : steps)
+        {
+            uintptr_t target = 0;
 
-        reinterpret_cast<CreateSceneZFn>(map.table[map.createScene])(context, ZString(""));
+            if (!ReadVtableEntry(map.table, static_cast<size_t>(step.slotIndex), &target))
+            {
+                error = "the vtable could not be read back";
+                return false;
+            }
 
-        Diag::Log("scene: fallback - StartEntities");
+            if (build.SizeOfImage() != 0 &&
+                !build.Contains(reinterpret_cast<void*>(target)))
+            {
+                error = "a counted slot points outside HMA.exe";
 
-        reinterpret_cast<StartEntitiesFn>(slot(kRelStartEntities))(context);
+                Diag::Log("scene: fallback refused - %s (slot %d) points at "
+                          "0x%08X, outside the game", step.name, step.slotIndex,
+                          static_cast<unsigned>(target));
+
+                return false;
+            }
+        }
+
+        for (const Step& step : steps)
+        {
+            Diag::Log("scene: fallback - %s", step.name);
+
+            FallbackStepContext call;
+
+            call.context   = context;
+            call.function  = map.table[step.slotIndex];
+            call.step      = step.step;
+            call.scene     = pending.entry->scene;
+            call.factory   = &pending.factory.Get();
+            call.blueprint = &pending.blueprint.Get();
+            call.headerLib = &pending.headerLib.Get();
+
+            if (!RunGuarded(&DoFallbackStep, &call))
+            {
+                error = std::string(step.name) + " faulted - the manual pipeline stopped there";
+
+                Diag::Log("scene: fallback - %s faulted, stopping", step.name);
+
+                return false;
+            }
+        }
 
         Diag::Log("scene: fallback complete - watching for the chapter to change");
 
         return true;
+    }
+
+    bool SceneSync::EngineMidTransition()
+    {
+        if (!LevelManager)
+        {
+            return false;
+        }
+
+        uint8_t window[kTransitionWindowBytes] = {};
+
+        if (!ReadTransitionWindow(LevelManager, window))
+        {
+            return false;
+        }
+
+        return window[0] != 0;
     }
 
     void SceneSync::AbortEngineTransition()
