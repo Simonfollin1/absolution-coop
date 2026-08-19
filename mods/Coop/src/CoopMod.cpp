@@ -270,7 +270,7 @@ namespace
     // report reads one of these back, so they name the work rather than a line
     // number - the log has to be readable by whoever is holding the frozen game.
     const char* const kFramePhases[] = {
-        "idle",
+        "the game's own work, between the mod's frames",
         "probe update",
         "jump state",
         "downed flow",
@@ -281,8 +281,8 @@ namespace
         "announcing the scene",
         "starting a jump",
         "committing a jump",
-        "watching for arrival",
-        "session update",
+        "reading what changed about the player",
+        "publishing local state",
         "frame end",
     };
 }
@@ -601,12 +601,24 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
 
     // Bumped however this frame leaves. The function has several early returns,
     // and a counter that missed them would read to the watchdog as a stall.
+    //
+    // It also puts the phase back to 0 - "waiting for the next frame". Without
+    // that, the last stage stamped stays behind after the mod is done, and a
+    // stall anywhere in the game's own code reads as a stall in whatever the
+    // mod happened to do last. The first watchdog build blamed "session update"
+    // for exactly that reason. Phase 0 means the mod finished and the game has
+    // not called it back: the stall is the game's, not the mod's.
     struct FrameTick
     {
+        std::atomic<uint32_t>& stage;
         std::atomic<uint64_t>& counter;
 
-        ~FrameTick() { counter.fetch_add(1, std::memory_order_relaxed); }
-    } frameTick{ m_frameCount };
+        ~FrameTick()
+        {
+            stage.store(0, std::memory_order_relaxed);
+            counter.fetch_add(1, std::memory_order_relaxed);
+        }
+    } frameTick{ m_framePhase, m_frameCount };
 
     const bool toggleDown = m_toggleAction.Digital();
 
@@ -861,21 +873,38 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
         m_lastSceneStage = stage;
     }
 
+    // How long the torn-down reading has held. The latch clears when the
+    // game-mode object is destroyed, which is where the teardown *begins* -
+    // entities and packages are still being released behind it, and the engine
+    // is still showing a loading screen. Committing on the first frame it reads
+    // clear means loading into a level that is still coming apart, so the
+    // reading has to hold still, and the engine has to be done loading, first.
+    if (Game::SceneSync::LevelTornDown() && !GameOffsets::IsLoading())
+    {
+        m_tornDownFor += deltaSeconds;
+    }
+    else
+    {
+        m_tornDownFor = 0.f;
+    }
+
     // Committing waits out any transition the engine is already running - the
     // player restarting a checkpoint from the pause menu while the level
     // streamed in, say. Writing the parameters mid-consumption would hand the
     // engine half of one destination and half of another.
+    constexpr float kSettleSeconds = 1.5f;
+
     if (Game::SceneSync::IsReadyToCommit()
         && !Game::SceneSync::EngineMidTransition()
-        && Game::SceneSync::LevelTornDown())
+        && m_tornDownFor >= kSettleSeconds)
     {
         // The level has been torn down to the clean front-end state, so the
         // engine will actually complete the switch now instead of hanging on a
         // second game-mode object standing beside the first. This is the moment
         // an armed Go there fires - the log marks it so the wait, the teardown
         // (the +0x6c latch dropping to 0), and the commit read as one story.
-        Diag::Log("scene: level torn down (clean front-end reached) - committing "
-                  "the armed load now");
+        Diag::Log("scene: level torn down and settled for %.1fs (clean front-end, "
+                  "engine not loading) - committing the armed load now", m_tornDownFor);
 
         // Let go of everything the mod is holding that points into the world
         // about to be destroyed. The damage hook is a patched entry in the
@@ -1035,7 +1064,14 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
     }
 
     m_passThroughWaited += deltaSeconds;
-    UpdatePlayerDiff();
+
+    // Reads the player to see what changed about them, so it sits the jump out
+    // with the rest of the world contact.
+    if (!m_worldContactSuspended.load(std::memory_order_relaxed))
+    {
+        phase(11);
+        UpdatePlayerDiff();
+    }
 
     if (!m_session.IsActive())
     {
@@ -1045,8 +1081,15 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
         return;
     }
 
-    phase(12);
-    PublishLocalState();
+    // Publishing reads the local player's position and state out of the world;
+    // during a jump that world is being torn down. Incoming events still get
+    // pumped - the session stays alive across the jump, it just stops
+    // describing a player who is on the way out.
+    if (!m_worldContactSuspended.load(std::memory_order_relaxed))
+    {
+        phase(12);
+        PublishLocalState();
+    }
     PumpEvents();
 
     // PlayerLeft is one reliable message and reliable is not the same as

@@ -213,6 +213,13 @@ private:
     std::atomic<bool> m_worldContactSuspended{ false };
     bool              m_loadActivePrev = false;
 
+    // How long the level has read as torn down. The latch that says so clears
+    // the moment the game-mode object is destroyed, which is the *start* of the
+    // teardown, not the end of it - entities and packages are still going away
+    // behind it. Loading into that is loading into a level still being taken
+    // apart, so the commit waits for the reading to hold still first.
+    float m_tornDownFor = 0.f;
+
     // The stall watchdog.
     //
     // A freeze during a level teardown leaves nothing behind: no crash, no last
