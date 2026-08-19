@@ -19,8 +19,16 @@ So they don't. **Every player runs their own copy of the level.** The mod
 replicates the players to each other and nothing else. Two people standing in
 the same room see the same level and different guards.
 
-This is the same shape Skyrim Together and Elden Ring Seamless take, for the
-same reason, and it decides everything downstream:
+The strongest precedent is in-family: IOI themselves, with full source access,
+built Hitman 2's Ghost Mode as separate per-player realities with a ghost
+avatar and a handful of curated cross-reality effects - the developer of this
+engine's own successor judged a shared NPC simulation not worth attempting even
+for an official mode. (Skyrim Together and Elden Ring's Seamless Co-op are
+*not* this shape, and citing them here used to be wrong: the first syncs NPCs
+through distributed actor ownership, the second reuses netcode FromSoftware
+shipped. Both lean on engine properties Absolution does not have - which
+strengthens the case, since the escape hatches other games used are closed
+here.) The decision drives everything downstream:
 
 - Positions, orientation and state are replicated. NPCs, doors, bodies,
   disguises and alarms are not.
@@ -406,3 +414,13 @@ overlay.
 
 **7. Everything on GOG.** Not one line has been run on it. The god-mode backstop
 is explicitly Steam-only and says so.
+
+**8. Netcode robustness past two players.** Three known weaknesses, none of
+which matters for a two-player session on a decent connection, all of which
+matter before anybody advertises eight: rosters carry no generation number, so
+a late retransmitted roster can regress the peer table; peer ids are reassigned
+lowest-free, so a leaver's id can be recycled onto a joiner while state keyed
+on the id is still in flight; and the inbound event queue sheds oldest-first at
+capacity, which under load can shed a PlayerLeft or a checkpoint rather than a
+cosmetic marker. The fixes are known (a monotonic roster generation, monotonic
+ids, shed-by-type) and none has been started.
