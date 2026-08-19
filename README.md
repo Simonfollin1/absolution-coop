@@ -48,6 +48,13 @@ If the router says no — some have UPnP switched off — forward UDP 47474 by
 hand, or put everyone on a VPN like ZeroTier or Radmin, which needs no router
 configuration at all. There's no matchmaking and no relay server.
 
+## Testing without a second player
+
+[`tools/coopbot`](tools/coopbot) is a headless player: it joins your hosted
+session, walks beside you, lights up the Go there button, drops markers and
+dies on command. Python 3, one file, same PC as the game. The build verifies
+byte-for-byte that it speaks the same protocol as the mod.
+
 ## When something's wrong
 
 It writes down what happened, so a bug report doesn't need screenshots:

@@ -34,6 +34,28 @@ env:
   CL: /D_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR
 
 jobs:
+  # The bot in tools/coopbot duplicates the wire format by hand, so it can
+  # drift from the C++ without anyone noticing - until a test session goes
+  # quietly wrong. This compiles the mod's real codec, prints one golden
+  # sample of every message, and requires the Python to produce the identical
+  # bytes and read them back to the identical values.
+  protocol:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Golden packets from the real codec
+        run: |
+          g++ -std=c++20 -O1 -I mods/Coop/include \
+              tools/coopbot/goldengen.cpp mods/Coop/src/Net/Protocol.cpp \
+              -o goldengen
+          ./goldengen | tee golden.txt
+
+      - name: The bot must speak the same bytes
+        run: python3 tools/coopbot/coopbot.py --selftest --golden golden.txt
+
   build:
     runs-on: windows-2022
 
