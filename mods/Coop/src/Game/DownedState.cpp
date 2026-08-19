@@ -130,8 +130,9 @@ namespace Coop::Game
         {
             // Where the call came from. That is the code which built the
             // SHitInfo, so it is where the damage figure was computed - the one
-            // thing a disassembler cannot tell us on its own, because YouGotHit
-            // is only ever reached through a vtable and has no direct callers.
+            // thing a static disassembler struggles with, because the damage
+            // arithmetic lives behind the projectile's own configuration and
+            // the interesting reachers of YouGotHit are vtable dispatches.
             //
             // _ReturnAddress is an intrinsic, so this costs nothing.
             TheHitInspector().Capture(hitInfo,

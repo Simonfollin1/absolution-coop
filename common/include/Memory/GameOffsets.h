@@ -87,19 +87,32 @@ namespace GameOffsets
     // cannot tell a stale pointer from a live one, and this runs every frame.
     bool ReadPointerBool(uintptr_t pointerOffset, uintptr_t fieldOffset, bool& valueOut);
 
+    // Copies `size` bytes from base + offset, but only after probing that the
+    // page is committed and readable, and inside a structured handler. Returns
+    // false and leaves `out` untouched on any failure.
+    bool ReadBytes(uintptr_t offset, void* out, size_t size);
+
+    // A scalar global, read the same guarded way as everything else here. The
+    // meanings of these offsets are autosplitter-sourced and unverified against
+    // the binary, so a wrong one has to fail soft, not fault - which a bare
+    // dereference would not. Returns T{} when the read cannot be made.
     template<typename T>
     inline T Read(uintptr_t offset)
     {
-        const uintptr_t base = GetModuleBase();
+        T value{};
 
-        if (!base || !offset || !IsSupported())
-        {
-            return T{};
-        }
-
-        return *reinterpret_cast<T*>(base + offset);
+        return ReadBytes(offset, &value, sizeof(T)) ? value : T{};
     }
 
+    // The least-supported offset in this file. It is autosplitter-sourced, and
+    // reading HMA.exe found the pointer at terminusElevatorPtr referenced only
+    // by sound code, never written where the static image can see it and never
+    // obviously an elevator-loading object - so the +0x38 loading bool rests on
+    // runtime state the binary does not corroborate. It is guarded like
+    // everything else and fails soft, so a wrong reading costs at worst a
+    // held-too-long or dropped-too-early loading check on the Terminus level,
+    // not a crash. Confirm it in a live Terminus session (log *(ptr) and the
+    // +0x38 byte across the elevator ride) before trusting it.
     inline bool IsTerminusElevatorLoading()
     {
         bool value = false;

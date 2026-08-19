@@ -366,6 +366,23 @@ namespace
             return false;
         }
     }
+
+    bool GuardedCopy(uintptr_t address, void* out, size_t size)
+    {
+        __try
+        {
+            for (size_t i = 0; i < size; ++i)
+            {
+                static_cast<uint8_t*>(out)[i] = reinterpret_cast<const uint8_t*>(address)[i];
+            }
+
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
 }
 
 bool GameOffsets::ReadPointerBool(uintptr_t pointerOffset, uintptr_t fieldOffset, bool& valueOut)
@@ -383,6 +400,33 @@ bool GameOffsets::ReadPointerBool(uintptr_t pointerOffset, uintptr_t fieldOffset
     }
 
     return GuardedReadThroughPointer(moduleBase + pointerOffset, fieldOffset, valueOut);
+}
+
+bool GameOffsets::ReadBytes(uintptr_t offset, void* out, size_t size)
+{
+    if (!offset || !IsSupported())
+    {
+        return false;
+    }
+
+    const uintptr_t moduleBase = GetModuleBase();
+
+    if (!moduleBase)
+    {
+        return false;
+    }
+
+    const uintptr_t address = moduleBase + offset;
+
+    // The scalar globals live in always-committed BSS, so this probe passes in
+    // normal play - but their meanings are autosplitter-sourced and unverified
+    // against the binary, so a wrong offset must fail soft rather than fault.
+    if (!IsReadable(address, size))
+    {
+        return false;
+    }
+
+    return GuardedCopy(address, out, size);
 }
 
 bool GameOffsets::ReadChainBool(const PointerChain& chain, bool& valueOut)

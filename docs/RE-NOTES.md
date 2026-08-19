@@ -1051,3 +1051,85 @@ rather than a clean BinDiff sweep.
 **The rule:** keep the room clean. Derived addresses, offsets and names go in
 this repo. Leaked binaries and symbol files do not, and neither does anything
 copied verbatim out of them.
+
+## 5. The binary audit — every engine assumption, checked
+
+Once a copy of `HMA.exe` (1.0.447.0 Steam, `SizeOfImage` 36777984, base
+`0x400000`) was in hand, every hardcoded engine address, offset, vtable slot and
+calling convention the mod relies on was verified against it — with capstone for
+the targeted questions and the Ghidra decompiler for whole functions. Five
+subsystems, about thirty load-bearing checks. **Not one thing the hooks actually
+depend on that could be settled statically was contradicted.** What follows is
+the record, so nobody re-derives it.
+
+### Confirmed against the binary
+
+- **Steam discriminator.** `STEAM_IMAGE_SIZE` 36777984 is the PE `SizeOfImage`
+  exactly. The GOG column is untested — no GOG binary was available.
+- **Level loading (SceneSync).** `SwitchToScene` at RVA `0x211870` is a
+  `__thiscall`, `ret 0x28` (ten stack arguments); the mod's `DoSwitchToScene`
+  matches it slot for slot — game mode, `ZString*` scene (deref'd, assigned via
+  `ZString::operator=`, hence the `CopyFrom`), checkpoint index, `STokenID*`
+  start checkpoint (deref'd), the two bonus tokens, and the restore/save flags.
+  The function sets the `+0x34` transition flag itself and computes
+  `bGameCompleted` from internal state — which is why it is called rather than
+  reimplemented. The flag getter at RVA `0x399340` is `mov al,[ecx+0x34]; ret`.
+  The `ZEntitySceneContext` vtable: ClearScene is slot 7 (RVA `0x265A80`),
+  CreateScene(ZString) is slot 10 (RVA `0x4479E0`), and the fallback's counted
+  slots — +1 PrepareNewScene, +5 SetSceneResources, +16 StartEntities, +20
+  SetSceneInitParameters — each match their function's argument size.
+- **LevelManager singleton = base + `0xE21310`.** Certain: all four
+  `SwitchToScene` call sites do `mov ecx, 0x1221310` immediately before the
+  call, and the function writes the `+0x34` flag on that object.
+- **Damage hook (DownedState).** The patched table is `ZHM5BaseCharacter`'s
+  `IBaseCharacter` sub-object vtable at `+0xc` (RTTI-confirmed), 12 entries.
+  Slot 5 is `YouGotHit` at RVA `0x080DF50`, a `__thiscall(this, hitInfo)`
+  (`ret 4`) with the tell-tale `add ecx,-0xc` adjustor. The AddRef==Release
+  fingerprint (slots 2 and 3 fold to one address, slot 4 differs) genuinely
+  discriminates the table.
+- **God mode.** `kPlayerGodModeOffset` `0xD4F5E0` is read by the health-set
+  routine as a boolean invulnerability override. The NPC flag `0xD4D91C` that
+  the Actors mod writes is a genuinely separate global with a separate reader —
+  the "different flag" warning in the code holds.
+- **Engine health (EngineHealth).** Every offset was confirmed inside the sole
+  `_root.g_mcHealthBar` draw function: live health `+0x640`, last-drawn copy
+  `+0x644`, the `!=`-gated early-out, the maximum chain `0xE21358 → +0xA2C →
+  +0x21C`, and the write/redraw trick (write value, then value-1, to force a
+  redraw).
+- **Safety plumbing.** `IsReadable`/`ReadPointerBool`/`ReadChainBool`/`WalkChain`
+  guard every dereference — range check, `VirtualQuery`, `__try/__except`. The
+  region cache is thread-local and generation-flushed.
+
+### Corrected by the audit
+
+- **`Read<T>` was the one unguarded reader.** It did a bare dereference while the
+  pointer and chain readers all probed first. Safe in practice — the scalar
+  globals it serves live in always-committed BSS — but an asymmetry worth
+  closing, since those offsets' *meanings* are unconfirmed (below). It now goes
+  through `ReadBytes`, which probes with `IsReadable` and copies under `__try`,
+  so a wrong scalar offset fails soft instead of faulting.
+- **A `YouGotHit` comment was inaccurate.** It claimed the function has no
+  direct callers; the call graph shows at least one plausible direct edge. The
+  hook patches the vtable pointer every dispatch reads, so interception is
+  unaffected — the comment was corrected, nothing else changed.
+
+### Still unverified — needs a live session to settle
+
+These are read the same guarded way as everything else, so a wrong one fails
+soft. But their *meanings* could not be proven from a static image:
+
+- **`terminusElevatorPtr` `0xE39520` (+0x38 loading bool)** is the least
+  supported. The pointer is referenced only by sound code and is never written
+  where the static image can see it, so the binary leans *against* the naming.
+  A wrong reading costs a held- or dropped-too-early loading check on the
+  Terminus level, not a crash. Confirm by logging `*(ptr)` and the `+0x38` byte
+  across the elevator ride.
+- **The autosplitter scalars** — `isInLoadingScreen` `0xE53E20`, `isInMenu`
+  `0xD61C7B`, `isResultScreen` `0xE213E8`, `currentLevel` `0xE20F48`,
+  `currentSection` `0xD60F94` — each land in the correct data region but are
+  reached as `base + displacement`, so the byte never appears as a literal
+  operand and its meaning can't be read statically. Confirm each by watching it
+  flip across the state boundary it names.
+- **`finaleExplosion`** (root `0xD610B4`, walk `{0x8,0x5FC,0x10,0x74,0x508}`).
+  The root is a real dereferenceable container pointer, but the object is
+  generic and the five-step heap walk can't be traced statically.
