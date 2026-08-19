@@ -6,27 +6,24 @@ namespace Coop::Game
 {
     // Following somebody into a mission.
     //
-    // The first session with two machines connected got as far as both players
-    // being in a session and no further: the host started a mission and the
-    // other player stayed in the menu, listed as "elsewhere", with nothing he
-    // could do about it. Nothing in the mod replicated *which* level anybody
-    // was in, only where they were standing inside one.
+    // Three attempts got here. The first wrote the scene path into
+    // SSceneParameters and called CreateScene - which instantiates resources
+    // that were never set, so it correctly did nothing. The second requested
+    // the level's factory and blueprint cold, before the level's package set
+    // was mounted, and the engine never came back from the lookup: both
+    // machines' logs end between two lines.
     //
-    // The first attempt at fixing that wrote the host's scene path into
-    // SSceneParameters and called CreateScene, on the reasoning that this is
-    // what the game does to itself on every transition. It returned cleanly and
-    // nothing happened, twice, on two machines.
+    // The dev build's symbols settled how the game itself does it. The menu
+    // calls ZLevelManager::SwitchToScene, which writes SSceneParameters, sets
+    // m_bInSceneTransition, and warms a package list - and then the engine's
+    // own main loop notices the flag and runs everything: loading screen,
+    // teardown, resource resolution, scene build, entity start.
     //
-    // It was never going to. SSceneParameters is what the game tells itself it
-    // is doing - the name of the level, the checkpoint, whether this is a
-    // restore. It is not an input to the loader. The loader takes three
-    // resources, through SetSceneResources, and CreateScene only instantiates
-    // whatever is already there. With no resources set there was nothing to
-    // instantiate, so CreateScene did the only correct thing available to it.
-    //
-    // SceneTable has the resources. What is left is the waiting: they stream in
-    // asynchronously, so asking for them and building the scene in the same
-    // frame gets three null pointers. Hence a load that spans frames.
+    // So this does the same three things. Begin mounts the level's libraries
+    // (the engine's own runtime-mount machinery, so everything is resident
+    // before anything irreversible happens), Update watches the mount, and
+    // Commit writes the parameters and sets the flag. The engine does the
+    // rest, exactly as if the menu had asked.
     class SceneSync
     {
     public:
@@ -70,9 +67,19 @@ namespace Coop::Game
         // only the caller knows about those.
         static bool IsReadyToCommit();
 
-        // Hands the resources to the scene context and asks for the scene.
-        // After this returns, nothing that was in the old world is valid.
+        // Starts the engine's own transition. After this returns, the engine
+        // owns everything that happens next - loading screen included.
         static bool Commit(std::string& error);
+
+        // Clears the transition flag this mod set, for when the watchdog
+        // decides nothing is going to happen.
+        static void AbortEngineTransition();
+
+        // Watches the level manager's transition window - the flag and the
+        // fields beside it - and logs every change. Called once a frame. This
+        // is how the +0x34 reading gets confirmed against the game's own
+        // transitions before anything is bet on it.
+        static void TraceTransitionWindow();
 
         // Throws away a load in progress without touching the world.
         static void Cancel();

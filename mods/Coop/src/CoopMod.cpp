@@ -736,10 +736,11 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
         else if (m_sceneLoadWatch <= 0.f)
         {
             Game::SceneSync::SetSceneName(m_sceneLoadWasIn);
+            Game::SceneSync::AbortEngineTransition();
 
             const char* note =
-                "the level's resources loaded and the engine took them, but the "
-                "chapter never changed - the log has the last call that ran";
+                "the level's resources loaded and the transition flag was set, "
+                "but the engine never picked it up - the log has the window trace";
 
             {
                 Threading::WriteGuard guard(m_sceneShareLock);
@@ -757,6 +758,7 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
     }
 
     TraceWorldChanges();
+    Game::SceneSync::TraceTransitionWindow();
     TraceKeys();
     AutoDumpWhenReady(deltaSeconds);
 

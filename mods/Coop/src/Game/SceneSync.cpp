@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cstring>
 #include <new>
 
 #include <Glacier/ZLevelManager.h>
@@ -167,6 +168,62 @@ namespace Coop::Game
             // a reference - and then the temporary releases on its way out.
             new (fetch->storage) ZResourcePtr(
                 ResourceManager->GetResourcePtr(ZRuntimeResourceID(fetch->id), 0));
+        }
+
+        // ZLevelManager's transition window.
+        //
+        // The dev build's ZLevelManager, mined from its PDBs, declares in
+        // order: SSceneParameters m_SceneTransitionData; bool
+        // m_bInSceneTransition; TResourcePtr<SPackageListData>
+        // m_pLoadingPackageList; ZString m_PreloadedSceneID. The retail SDK
+        // hides everything after the parameters in PAD(0x10) - and the pad is
+        // exactly bool+padding (4) + pointer (4) + ZString (8). So the flag
+        // the engine's main loop watches is one byte at +0x34.
+        //
+        // ZLevelManager::SwitchToScene - the function the menu itself goes
+        // through - does three things: writes m_SceneTransitionData, sets this
+        // flag, and warms a package list. The first version of this file wrote
+        // the parameters and then tried to run the load by hand; the flag is
+        // what actually hands the job to the engine, loading screen and all.
+        constexpr uintptr_t kInSceneTransitionOffset = 0x34;
+        constexpr size_t    kTransitionWindowBytes   = 0x10;
+
+        bool ReadTransitionWindow(const void* levelManager, uint8_t* out16)
+        {
+            __try
+            {
+                const uint8_t* window =
+                    reinterpret_cast<const uint8_t*>(levelManager) + kInSceneTransitionOffset;
+
+                for (size_t i = 0; i < kTransitionWindowBytes; ++i)
+                {
+                    out16[i] = window[i];
+                }
+
+                return true;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                return false;
+            }
+        }
+
+        bool WriteTransitionFlag(void* levelManager, uint8_t value, uint8_t* previousOut)
+        {
+            __try
+            {
+                uint8_t* flag =
+                    reinterpret_cast<uint8_t*>(levelManager) + kInSceneTransitionOffset;
+
+                *previousOut = *flag;
+                *flag        = value;
+
+                return true;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                return false;
+            }
         }
 
         // A ZResourcePtr fetched under guard. Holds raw storage so nothing is
@@ -615,10 +672,10 @@ namespace Coop::Game
             return false;
         }
 
-        // What the game tells itself it is doing. Not an input to the loader,
-        // but everything downstream reads it - the HUD, the checkpoint manager,
-        // and this mod's own idea of where it is - so it has to agree with what
-        // is about to be built.
+        // The transition record the engine's own SwitchToScene fills in: the
+        // path, the mode, the checkpoint. Everything downstream reads it - the
+        // loader, the HUD, the checkpoint manager - so all of it is written,
+        // not just the name.
         //
         // ZString does not copy. Its const char* constructor sets the top bit
         // of the length, the flag for "not allocated", and keeps the pointer;
@@ -630,49 +687,100 @@ namespace Coop::Game
         const ZString view(pending.entry->scene);
 
         parameters.sSceneResource   = ZString::CopyFrom(view);
+        parameters.eGameMode        = eCGM_STORYMODE;
         parameters.nCheckpointIndex = pending.checkpoint;
         parameters.bRestoring       = false;
         parameters.bUseSaveGame     = false;
+        parameters.bGameCompleted   = false;
 
-        Diag::Log("scene: parameters written - %s at checkpoint %d",
+        Diag::Log("scene: parameters written - %s at checkpoint %d, storymode",
                   pending.entry->scene, pending.checkpoint);
 
-        // The mount kept from the previous transition, if any, has done its
-        // job - that world is about to be torn down.
+        // Then the flag. This is the whole handover: the engine's main loop
+        // sees it, runs its own teardown, loading screen, resource resolution
+        // and scene build - the exact pipeline a mission start from the menu
+        // uses. Nothing here calls the scene context at all any more; the
+        // first version did, skipped half the pipeline's steps because nothing
+        // shipped documents them, and built nothing.
+        uint8_t previous = 0xFF;
+
+        if (!WriteTransitionFlag(LevelManager, 1, &previous))
+        {
+            error = "could not reach the transition flag";
+
+            Finish(Stage::Failed);
+
+            return false;
+        }
+
+        Diag::Log("scene: transition flag set at +0x%02X (was %u) - the engine "
+                  "owns the load from here",
+                  static_cast<unsigned>(kInSceneTransitionOffset), previous);
+
+        // The mount stays alive through the transition: everything the engine
+        // is about to resolve is already resident because of it, and the level
+        // it backs is the one being built. Released when the next transition
+        // replaces it.
         FreeMount(g_keptMounted, "the previous level's mount");
 
-        // From here on the old world is going away, and every step is logged
-        // before it runs rather than after. If the game dies inside one of
-        // these, the last line in the log is the name of the call that did it.
-        Diag::Log("scene: ClearScene(true)");
-
-        context->ClearScene(true);
-
-        Diag::Log("scene: SetSceneResources");
-
-        context->SetSceneResources(TResourcePtr<IEntityFactory>(pending.factory.Get()),
-                                   TResourcePtr<IEntityBlueprintFactory>(pending.blueprint.Get()),
-                                   pending.headerLib.Get());
-
-        // An empty streaming state is what a plain transition uses.
-        Diag::Log("scene: CreateScene");
-
-        context->CreateScene(ZString(""));
-
-        // StartEntities is deliberately not called. The scene streams in over
-        // several frames and the engine starts it when it is whole; calling it
-        // here would start a world that is half built. If the level comes up
-        // and nothing in it moves, this is the line to revisit.
-        Diag::Log("scene: asked for %s (%s)", pending.entry->scene, pending.entry->label);
-
-        // The new scene builds out of the libraries this mount holds resident,
-        // so it outlives the Pending and is only released when the transition
-        // after this one replaces it.
         g_keptMounted   = pending.library;
         pending.library = nullptr;
 
         Finish(Stage::Committed);
 
         return true;
+    }
+
+    void SceneSync::AbortEngineTransition()
+    {
+        if (!LevelManager)
+        {
+            return;
+        }
+
+        uint8_t previous = 0xFF;
+
+        if (WriteTransitionFlag(LevelManager, 0, &previous))
+        {
+            Diag::Log("scene: transition flag cleared (was %u)", previous);
+        }
+    }
+
+    void SceneSync::TraceTransitionWindow()
+    {
+        if (!LevelManager)
+        {
+            return;
+        }
+
+        static uint8_t lastWindow[kTransitionWindowBytes] = {};
+        static bool    haveWindow = false;
+
+        uint8_t window[kTransitionWindowBytes] = {};
+
+        if (!ReadTransitionWindow(LevelManager, window))
+        {
+            return;
+        }
+
+        if (haveWindow && std::memcmp(window, lastWindow, sizeof(window)) == 0)
+        {
+            return;
+        }
+
+        // Logged on every change so the game's OWN transitions confirm the
+        // reading: start a mission from the menu and the byte at +0x34 should
+        // go 0 -> 1 -> 0 around the loading screen. If it does not, the flag
+        // is not where the dev build says, and the log will show it before
+        // anybody wonders why Go there did nothing.
+        Diag::Log("scene: transition window +34=%02X%02X%02X%02X pkglist=%02X%02X%02X%02X "
+                  "preload=%02X%02X%02X%02X.%02X%02X%02X%02X",
+                  window[0], window[1], window[2], window[3],
+                  window[4], window[5], window[6], window[7],
+                  window[8], window[9], window[10], window[11],
+                  window[12], window[13], window[14], window[15]);
+
+        std::memcpy(lastWindow, window, sizeof(lastWindow));
+        haveWindow = true;
     }
 }
