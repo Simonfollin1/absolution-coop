@@ -13,17 +13,18 @@ namespace Coop::Game
     // was mounted, and the engine never came back from the lookup: both
     // machines' logs end between two lines.
     //
-    // The dev build's symbols settled how the game itself does it. The menu
-    // calls ZLevelManager::SwitchToScene, which writes SSceneParameters, sets
-    // m_bInSceneTransition, and warms a package list - and then the engine's
-    // own main loop notices the flag and runs everything: loading screen,
-    // teardown, resource resolution, scene build, entity start.
+    // The retail binary settled it. The game has one function for entering a
+    // mission - ZLevelManager::SwitchToScene - and all four of its own
+    // scene-switch paths call it. Reading it out of HMA.exe showed it does
+    // more than the three things guessed at: it writes every parameter, sets
+    // m_bInSceneTransition, and makes two further calls nothing else makes.
+    // So the third design stopped reconstructing it and started calling it.
     //
-    // So this does the same three things. Begin mounts the level's libraries
-    // (the engine's own runtime-mount machinery, so everything is resident
-    // before anything irreversible happens), Update watches the mount, and
-    // Commit writes the parameters and sets the flag. The engine does the
-    // rest, exactly as if the menu had asked.
+    // Begin mounts the level's libraries (the engine's own runtime-mount
+    // machinery, so everything is resident before anything irreversible
+    // happens), Update watches the mount, and Commit calls SwitchToScene with
+    // the arguments the game's own callers pass. The engine does the rest,
+    // because it is the engine's own function doing it.
     class SceneSync
     {
     public:

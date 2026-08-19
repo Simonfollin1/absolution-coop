@@ -171,6 +171,51 @@ namespace Coop::Game
                 ResourceManager->GetResourcePtr(ZRuntimeResourceID(fetch->id), 0));
         }
 
+        // ZLevelManager::SwitchToScene, at the address the game's own four
+        // scene-switch paths call.
+        //
+        // Read out of the retail binary rather than guessed: the function
+        // assigns the path into m_SceneTransitionData.sSceneResource, writes
+        // every other parameter field, sets m_bInSceneTransition, and then
+        // makes two further calls that nothing outside it makes - it queues
+        // the scene path with one manager and resets another. Replicating the
+        // first two by hand was always going to miss the second two.
+        //
+        // Ten arguments, all dword-sized on the stack, callee-cleaned (ret
+        // 0x28). The order comes from the two call sites that pass constants:
+        // one starts a story mission at checkpoint 0, the other restarts at
+        // checkpoint -1.
+        constexpr uintptr_t kSwitchToSceneRva = 0x211870;
+
+        struct SwitchContext
+        {
+            void*          levelManager   = nullptr;
+            const void*    scene          = nullptr;   // const ZString*
+            const void*    startCheckpoint = nullptr;  // const STokenID*
+            int            gameMode       = 0;
+            int            checkpointIndex = 0;
+        };
+
+        void __cdecl DoSwitchToScene(void* raw)
+        {
+            auto* call = static_cast<SwitchContext*>(raw);
+
+            using SwitchFn = void(__thiscall*)(void*, int, const void*, int, const void*,
+                                               unsigned, unsigned, unsigned, unsigned,
+                                               unsigned, unsigned);
+
+            reinterpret_cast<SwitchFn>(BaseAddress + kSwitchToSceneRva)(
+                call->levelManager,
+                call->gameMode,
+                call->scene,
+                call->checkpointIndex,
+                call->startCheckpoint,
+                0, 0,      // no bonus weapon
+                0, 0,      // no bonus outfit
+                0,         // bRestoring
+                0);        // bUseSaveGame
+        }
+
         // ZLevelManager's transition window.
         //
         // The dev build's ZLevelManager, mined from its PDBs, declares in
@@ -885,40 +930,32 @@ namespace Coop::Game
             return false;
         }
 
-        // The transition record the engine's own SwitchToScene fills in: the
-        // path, the mode, the checkpoint. Everything downstream reads it - the
-        // loader, the HUD, the checkpoint manager - so all of it is written,
-        // not just the name.
+        // Ask the engine the way the engine asks itself.
         //
-        // ZString does not copy. Its const char* constructor sets the top bit
-        // of the length, the flag for "not allocated", and keeps the pointer;
-        // assigning from an unallocated one passes that pointer straight
-        // through. CopyFrom allocates through the game's own allocator, which
-        // is what makes the engine the owner of what it is holding.
-        SSceneParameters& parameters = LevelManager->GetSceneParameters();
-
+        // Every earlier attempt reconstructed a piece of this: first the scene
+        // path, then the whole parameter block, then the parameter block plus
+        // the transition flag. The retail binary settles it - the game has one
+        // function for this, ZLevelManager::SwitchToScene, and all four of its
+        // own scene-switch paths call it. It writes the parameters, sets the
+        // flag, and makes two more calls besides. So this calls it too, and
+        // stops guessing which of its effects mattered.
+        //
+        // The path has to outlive the call, and it has to be a string the
+        // engine owns: SwitchToScene assigns it with ZString::operator=, and
+        // assigning from an unallocated literal-backed ZString hands the
+        // engine a pointer into this module. CopyFrom allocates through the
+        // game's own allocator, which is what makes the copy real.
         const ZString view(pending.entry->scene);
+        const ZString scene = ZString::CopyFrom(view);
 
-        parameters.sSceneResource   = ZString::CopyFrom(view);
-        parameters.eGameMode        = eCGM_STORYMODE;
-        parameters.nCheckpointIndex = pending.checkpoint;
-        parameters.bRestoring       = false;
-        parameters.bUseSaveGame     = false;
-        parameters.bGameCompleted   = false;
+        // No named start checkpoint: the index says where to begin. The
+        // engine's own callers pass a pointer to an invalid token here, and a
+        // stale valid one would send the loader looking for a checkpoint that
+        // belongs to a different level.
+        STokenID startCheckpoint;
 
-        // The tokens still hold whatever the player's last menu-driven start
-        // put in them - a bonus weapon, a bonus outfit, a named checkpoint
-        // that may not exist in the destination. This is a plain story-mode
-        // start, so all three say so.
-        parameters.BonusWeapon.m_iValue        = 0;
-        parameters.BonusWeapon.m_bValid        = false;
-        parameters.BonusOutfit.m_iValue        = 0;
-        parameters.BonusOutfit.m_bValid        = false;
-        parameters.sStartCheckpointID.m_iValue = 0;
-        parameters.sStartCheckpointID.m_bValid = false;
-
-        Diag::Log("scene: parameters written - %s at checkpoint %d, storymode",
-                  pending.entry->scene, pending.checkpoint);
+        startCheckpoint.m_iValue = 0;
+        startCheckpoint.m_bValid = false;
 
         {
             static bool dumped = false;
@@ -936,26 +973,41 @@ namespace Coop::Game
             }
         }
 
-        // Then the flag. This is the whole handover: the engine's main loop
-        // sees it, runs its own teardown, loading screen, resource resolution
-        // and scene build - the exact pipeline a mission start from the menu
-        // uses. Nothing here calls the scene context at all any more; the
-        // first version did, skipped half the pipeline's steps because nothing
-        // shipped documents them, and built nothing.
-        uint8_t previous = 0xFF;
+        Diag::Log("scene: calling SwitchToScene(storymode, %s, checkpoint %d)",
+                  pending.entry->scene, pending.checkpoint);
 
-        if (!WriteTransitionFlag(LevelManager, 1, &previous))
+        SwitchContext call;
+
+        call.levelManager    = LevelManager;
+        call.scene           = &scene;
+        call.startCheckpoint = &startCheckpoint;
+        call.gameMode        = eCGM_STORYMODE;
+        call.checkpointIndex = pending.checkpoint;
+
+        if (!RunGuarded(&DoSwitchToScene, &call))
         {
-            error = "could not reach the transition flag";
+            error = "SwitchToScene faulted";
+
+            Diag::Log("scene: SwitchToScene faulted - nothing was handed over");
 
             Finish(Stage::Failed);
 
             return false;
         }
 
-        Diag::Log("scene: transition flag set at +0x%02X (was %u) - the engine "
-                  "owns the load from here",
-                  static_cast<unsigned>(kInSceneTransitionOffset), previous);
+        // Read the flag back rather than trusting the call: if the engine did
+        // take the request, this is 1, and the log says so either way.
+        uint8_t window[kTransitionWindowBytes] = {};
+
+        if (ReadTransitionWindow(LevelManager, window))
+        {
+            Diag::Log("scene: SwitchToScene returned, transition flag now %u - "
+                      "the engine owns the load from here", window[0]);
+        }
+        else
+        {
+            Diag::Log("scene: SwitchToScene returned, the flag could not be read back");
+        }
 
         // Everything stays alive: the mount because the engine is about to
         // resolve out of it, the three stubs because the fallback needs them
