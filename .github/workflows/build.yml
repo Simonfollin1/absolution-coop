@@ -145,6 +145,53 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --target DirectInputProxy HitmanAbsolutionSDK Coop
 
+      # Turns "Coop.dll+0xRVA" from a crash report back into a function name.
+      # The offsets below are from real reports against this exact source tree;
+      # the resolution lands in the build log, where it can be read without
+      # downloading anything.
+      - name: Resolve crash offsets against the linker map
+        shell: pwsh
+        run: |
+          $map = Get-ChildItem -Recurse build -Filter "Coop.map" | Select-Object -First 1
+          if (-not $map) { Write-Host "no Coop.map produced"; exit 0 }
+
+          $lines = Get-Content $map.FullName
+          $base  = 0x10000000
+          foreach ($line in $lines) {
+            if ($line -match "Preferred load address is ([0-9a-fA-F]+)") {
+              $base = [Convert]::ToUInt64($Matches[1], 16); break
+            }
+          }
+
+          # Symbol table: "0001:offset  name  rva+base  f  obj"
+          $symbols = @()
+          foreach ($line in $lines) {
+            if ($line -match "^\s+\d{4}:[0-9a-fA-F]{8}\s+(\S+)\s+([0-9a-fA-F]{8})") {
+              $rva = [Convert]::ToUInt64($Matches[2], 16) - $base
+              $symbols += [pscustomobject]@{ Rva = $rva; Name = $Matches[1] }
+            }
+          }
+          $symbols = $symbols | Sort-Object Rva
+
+          $targets = 0x1FF00, 0x1D14C, 0x1958E, 0x5A925, 0x76CC1
+          foreach ($t in $targets) {
+            $hit = $symbols | Where-Object { $_.Rva -le $t } | Select-Object -Last 1
+            if ($hit) {
+              "{0}  Coop.dll+0x{1:X}  =  {2} + 0x{3:X}" -f "RESOLVED", $t, $hit.Name, ($t - $hit.Rva)
+            } else {
+              "UNRESOLVED  Coop.dll+0x{0:X}" -f $t
+            }
+          }
+
+      - name: Upload linker map
+        uses: actions/upload-artifact@v4
+        with:
+          name: Coop-map-${{ github.sha }}
+          path: |
+            build/**/Coop.map
+            build/**/Coop.pdb
+          if-no-files-found: warn
+
       # ---- Package ----------------------------------------------------------
       #
       # Three things an earlier version of this got wrong, each of which alone
