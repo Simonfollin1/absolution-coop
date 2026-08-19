@@ -24,6 +24,11 @@ namespace Diag
     // The string must outlive the call - use literals.
     void Breadcrumb(const char* stage);
 
+    // Tells the crash handler what the calling thread is - "game", "render",
+    // "net". A report that says which loop died answers half the question
+    // before anybody opens a disassembler.
+    void NameCurrentThread(const char* role);
+
     // Installs a vectored exception handler that writes mods/<modName>-crash.log
     // on the first few access violations and then gets out of the way, so the
     // game's own minidump still happens.

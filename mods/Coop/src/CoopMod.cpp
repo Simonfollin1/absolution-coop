@@ -442,12 +442,21 @@ void CoopMod::AddLogLine(const std::string& line)
     // panel cannot be sent to anybody. The file is none of those things.
     Diag::Log("%s", line.c_str());
 
+    Threading::WriteGuard guard(m_logLock);
+
     m_log.push_back(line);
 
     while (m_log.size() > kLogCapacity)
     {
         m_log.pop_front();
     }
+}
+
+std::vector<std::string> CoopMod::SnapshotLog() const
+{
+    Threading::ReadGuard guard(m_logLock);
+
+    return std::vector<std::string>(m_log.begin(), m_log.end());
 }
 
 void CoopMod::ForgetPeerScene(const char* why)
@@ -459,6 +468,8 @@ void CoopMod::ForgetPeerScene(const char* why)
 
     Diag::Log("scene: dropping the offer to join %s - %s",
               m_peerScene.empty() ? "(nowhere)" : m_peerScene.c_str(), why);
+
+    Threading::WriteGuard guard(m_sceneShareLock);
 
     m_peerScene.clear();
     m_peerSceneOwner.clear();
@@ -483,6 +494,10 @@ std::string CoopMod::PeerName(uint8_t peerId) const
 
 void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
 {
+    // Once per thread would do; once per frame costs a thread-local store and
+    // buys a crash report that says which loop died.
+    Diag::NameCurrentThread("game");
+
     const Diag::FrameCostScope costScope(m_cost);
 
     const bool toggleDown = m_toggleAction.Digital();
@@ -549,7 +564,10 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
 
     if (scene != m_publishedScene)
     {
-        m_publishedScene = scene;
+        {
+            Threading::WriteGuard guard(m_sceneShareLock);
+            m_publishedScene = scene;
+        }
 
         Diag::Log("scene: we are in %s", scene.empty() ? "(menu)" : scene.c_str());
 
@@ -608,7 +626,16 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
     // in the meantime and gets it back if the level turns out not to load.
     if (m_sceneLoadPending)
     {
-        m_sceneLoadPending = false;
+        std::string request;
+        int         checkpoint = 0;
+
+        {
+            Threading::WriteGuard guard(m_sceneShareLock);
+
+            m_sceneLoadPending = false;
+            request            = m_sceneLoadRequest;
+            checkpoint         = m_sceneLoadCheckpoint;
+        }
 
         std::string error;
 
@@ -618,21 +645,40 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
         m_sceneLoadFromLvl = m_probe.LocalState().level;
         m_sceneLoadWatch   = 0.f;
 
-        if (!Game::SceneSync::Begin(m_sceneLoadRequest, m_sceneLoadCheckpoint, error))
-        {
-            m_sceneError = error;
+        const bool started = Game::SceneSync::Begin(request, checkpoint, error);
 
-            AddLogLine(std::format("Could not go there: {}", error));
-        }
-        else
         {
-            m_sceneError.clear();
-
-            AddLogLine("Loading their level - waiting for it to stream in");
+            Threading::WriteGuard guard(m_sceneShareLock);
+            m_sceneError = started ? std::string() : error;
         }
+
+        AddLogLine(started ? std::string("Loading their level - waiting for it to stream in")
+                           : std::format("Could not go there: {}", error));
     }
 
     Game::SceneSync::Update(deltaSeconds);
+
+    // A load can now fail inside Update - the mount never finishing, a
+    // resource missing - and nothing returns an error string from there. The
+    // stage transition is the signal, and the player deserves a sentence for
+    // it, not just a button that quietly comes back.
+    {
+        const Game::SceneSync::Stage stage = Game::SceneSync::CurrentStage();
+
+        if (stage == Game::SceneSync::Stage::Failed && m_lastSceneStage != stage)
+        {
+            const char* note = "the level did not load - mods/Coop.log has the last step that ran";
+
+            {
+                Threading::WriteGuard guard(m_sceneShareLock);
+                m_sceneError = note;
+            }
+
+            AddLogLine(note);
+        }
+
+        m_lastSceneStage = stage;
+    }
 
     if (Game::SceneSync::IsReadyToCommit())
     {
@@ -652,7 +698,11 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
 
         if (!Game::SceneSync::Commit(error))
         {
-            m_sceneError     = error;
+            {
+                Threading::WriteGuard guard(m_sceneShareLock);
+                m_sceneError = error;
+            }
+
             m_sceneLoadWatch = 0.f;
 
             AddLogLine(std::format("Could not go there: {}", error));
@@ -687,13 +737,18 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
         {
             Game::SceneSync::SetSceneName(m_sceneLoadWasIn);
 
-            m_publishedScene = m_sceneLoadWasIn;
-
-            m_sceneError =
+            const char* note =
                 "the level's resources loaded and the engine took them, but the "
                 "chapter never changed - the log has the last call that ran";
 
-            AddLogLine(m_sceneError);
+            {
+                Threading::WriteGuard guard(m_sceneShareLock);
+
+                m_publishedScene = m_sceneLoadWasIn;
+                m_sceneError     = note;
+            }
+
+            AddLogLine(note);
 
             Diag::Log("scene: no transition thirty seconds after CreateScene, "
                       "name put back to %s",
@@ -1159,8 +1214,7 @@ void CoopMod::AutoDumpWhenReady(float deltaSeconds)
     std::string error;
 
     const std::string path = Game::WriteDump(
-        m_configVars, m_probe, m_bindingExpression,
-        std::vector<std::string>(m_log.begin(), m_log.end()), error);
+        m_configVars, m_probe, m_bindingExpression, SnapshotLog(), error);
 
     if (path.empty())
     {
@@ -1353,10 +1407,14 @@ void CoopMod::PumpEvents()
                 continue;
             }
 
-            m_peerScene           = event.text;
-            m_peerSceneCheckpoint = static_cast<int>(event.x);
-            m_peerSceneOwner      = name;
-            m_peerSceneOwnerId    = event.originPeerId;
+            {
+                Threading::WriteGuard guard(m_sceneShareLock);
+
+                m_peerScene           = event.text;
+                m_peerSceneCheckpoint = static_cast<int>(event.x);
+                m_peerSceneOwner      = name;
+                m_peerSceneOwnerId    = event.originPeerId;
+            }
 
             Diag::Log("scene: %s is in %s at checkpoint %d",
                       name.c_str(), m_peerScene.c_str(), m_peerSceneCheckpoint);
@@ -1600,6 +1658,8 @@ void CoopMod::OnDraw3D()
 
 void CoopMod::OnDrawUI(const bool hasFocus)
 {
+    Diag::NameCurrentThread("render");
+
     m_loaded.OnDrawUI(hasFocus);
 
     // The health ring, driven from here rather than from the frame update.
@@ -1814,12 +1874,23 @@ void CoopMod::RenderHudOverlay()
         }
 
         // The one thing worth interrupting for: everybody else is in a level
-        // you are not in, and the panel is where you fix that.
-        if (!m_peerScene.empty() && m_peerScene != m_publishedScene)
+        // you are not in, and the panel is where you fix that. Copies, because
+        // this runs on the render thread and the game thread owns the strings.
+        std::string peerScene, peerOwner, published;
+
+        {
+            Threading::ReadGuard guard(m_sceneShareLock);
+
+            peerScene = m_peerScene;
+            peerOwner = m_peerSceneOwner;
+            published = m_publishedScene;
+        }
+
+        if (!peerScene.empty() && peerScene != published)
         {
             ImGui::Separator();
             ImGui::TextColored(ImVec4(1.f, 0.82f, 0.35f, 1.f), "%s is in another mission",
-                               m_peerSceneOwner.empty() ? "Somebody" : m_peerSceneOwner.c_str());
+                               peerOwner.empty() ? "Somebody" : peerOwner.c_str());
             ImGui::TextDisabled("Open co-op and press Go there");
         }
 
@@ -1923,15 +1994,29 @@ void CoopMod::RenderSessionTab()
     }
 
     // Following somebody into a mission. First thing on the tab, because it is
-    // the first thing anybody needs after connecting.
-    if (m_session.IsActive() && !m_peerScene.empty() && m_publishedScene != m_peerScene)
+    // the first thing anybody needs after connecting. All copies: this runs on
+    // the render thread and the game thread owns these strings.
+    std::string peerScene, peerOwner, published, sceneError;
+    int         peerCheckpoint = -1;
+
+    {
+        Threading::ReadGuard guard(m_sceneShareLock);
+
+        peerScene      = m_peerScene;
+        peerOwner      = m_peerSceneOwner;
+        published      = m_publishedScene;
+        sceneError     = m_sceneError;
+        peerCheckpoint = m_peerSceneCheckpoint;
+    }
+
+    if (m_session.IsActive() && !peerScene.empty() && published != peerScene)
     {
         ImGui::SeparatorText("They are somewhere else");
 
         ImGui::TextWrapped("%s is in a level you are not in.",
-                           m_peerSceneOwner.empty() ? "Somebody" : m_peerSceneOwner.c_str());
+                           peerOwner.empty() ? "Somebody" : peerOwner.c_str());
 
-        ImGui::TextDisabled("%s", m_peerScene.c_str());
+        ImGui::TextDisabled("%s", peerScene.c_str());
 
         const Game::SceneSync::Stage stage = Game::SceneSync::CurrentStage();
 
@@ -1947,13 +2032,17 @@ void CoopMod::RenderSessionTab()
             // Present, and a scene load tears down and rebuilds the world -
             // doing that mid-frame with the renderer's state live is what
             // crashed the first person who pressed it.
-            m_sceneLoadRequest    = m_peerScene;
-            m_sceneLoadCheckpoint = m_peerSceneCheckpoint;
-            m_sceneLoadPending    = true;
+            {
+                Threading::WriteGuard guard(m_sceneShareLock);
 
-            m_sceneError.clear();
+                m_sceneLoadRequest    = peerScene;
+                m_sceneLoadCheckpoint = peerCheckpoint;
+                m_sceneLoadPending    = true;
 
-            AddLogLine(std::format("Going to {}", m_peerScene));
+                m_sceneError.clear();
+            }
+
+            AddLogLine(std::format("Going to {}", peerScene));
         }
 
         ImGui::EndDisabled();
@@ -1972,9 +2061,9 @@ void CoopMod::RenderSessionTab()
             ImGui::TextDisabled("this restarts you into their mission");
         }
 
-        if (!m_sceneError.empty())
+        if (!sceneError.empty())
         {
-            ImGui::TextColored(ImVec4(1.f, 0.45f, 0.45f, 1.f), "%s", m_sceneError.c_str());
+            ImGui::TextColored(ImVec4(1.f, 0.45f, 0.45f, 1.f), "%s", sceneError.c_str());
         }
     }
 
@@ -2353,9 +2442,13 @@ void CoopMod::RenderDiagnosticsTab()
                 m_probe.LocalState().level, m_probe.LocalState().section,
                 m_probe.CurrentJumpPoint(), m_probe.AliveActorCount());
 
-    if (!m_publishedScene.empty())
     {
-        ImGui::TextDisabled("%s", m_publishedScene.c_str());
+        Threading::ReadGuard guard(m_sceneShareLock);
+
+        if (!m_publishedScene.empty())
+        {
+            ImGui::TextDisabled("%s", m_publishedScene.c_str());
+        }
     }
 
     ImGui::SeparatorText("Mod");
@@ -2390,8 +2483,7 @@ void CoopMod::RenderDiagnosticsTab()
     if (ImGui::Button("Dump now", ImVec2(150.f, 0.f)))
     {
         m_lastDumpPath = Game::WriteDump(m_configVars, m_probe, m_bindingExpression,
-                                         std::vector<std::string>(m_log.begin(), m_log.end()),
-                                         m_lastDumpError);
+                                         SnapshotLog(), m_lastDumpError);
 
         AddLogLine(m_lastDumpPath.empty()
             ? std::format("Dump failed: {}", m_lastDumpError)
@@ -2460,6 +2552,8 @@ void CoopMod::RenderDiagnosticsTab()
 
     if (ImGui::BeginChild("log", ImVec2(0.f, 140.f), true))
     {
+        Threading::ReadGuard guard(m_logLock);
+
         for (const std::string& line : m_log)
         {
             ImGui::TextWrapped("%s", line.c_str());

@@ -6,6 +6,8 @@
 
 #include "Net/Session.h"
 
+#include "Diag/Diag.h"
+
 namespace Coop::Net
 {
     namespace
@@ -315,6 +317,8 @@ namespace Coop::Net
 
     void Session::ThreadMain()
     {
+        Diag::NameCurrentThread("net");
+
         while (m_running.load())
         {
             // Sleeps until a packet arrives or the timeout expires, so the

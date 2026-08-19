@@ -145,6 +145,19 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --target DirectInputProxy HitmanAbsolutionSDK Coop
 
+      # A crash report is module+offset and nothing else. The map and the pdb
+      # are what turn an offset back into a function name, they are produced by
+      # every build anyway, and without this they die with the runner - which
+      # is how one crash went unsymbolicated for a whole evening.
+      - name: Keep the symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: Coop-symbols-${{ github.sha }}
+          path: |
+            build/**/Coop.map
+            build/**/Coop.pdb
+          if-no-files-found: warn
+
       # ---- Package ----------------------------------------------------------
       #
       # Three things an earlier version of this got wrong, each of which alone

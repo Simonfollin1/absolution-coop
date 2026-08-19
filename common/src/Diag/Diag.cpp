@@ -28,6 +28,7 @@ namespace
     // Where each thread currently is. The crash handler reads the crashing
     // thread's own value, which is exactly the one we want.
     thread_local const char* t_stage = "not started";
+    thread_local const char* t_role  = nullptr;
 
     // A short history across all threads, so a crash on a thread we never
     // instrumented still shows what the others were doing.
@@ -331,7 +332,8 @@ namespace
 
         append("\n==== %s crash report ====\n", g_modName);
         append("time            %s\n", timeText);
-        append("thread          %lu\n", GetCurrentThreadId());
+        append("thread          %lu (%s)\n", GetCurrentThreadId(),
+               t_role ? t_role : "unnamed");
         append("exception       0x%08X\n", record.ExceptionCode);
         append("at              %s\n", where);
 
@@ -510,6 +512,11 @@ namespace Diag
         std::fflush(g_logFile);
 
         LeaveCriticalSection(&g_lock);
+    }
+
+    void NameCurrentThread(const char* role)
+    {
+        t_role = role;
     }
 
     void Breadcrumb(const char* stage)

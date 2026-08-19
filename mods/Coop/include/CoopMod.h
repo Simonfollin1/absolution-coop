@@ -25,6 +25,7 @@
 
 #include "UI/LoadedMarker.h"
 #include "Diag/FrameCost.h"
+#include "Threading/Lock.h"
 
 // Absolution Co-op.
 //
@@ -112,6 +113,9 @@ private:
     void RenderHurtOverlay();
 
     void AddLogLine(const std::string& line);
+
+    // A consistent copy for the dump writers, taken under the lock.
+    std::vector<std::string> SnapshotLog() const;
     std::string DescribeEvent(const Coop::Net::EventMessage& event) const;
     std::string PeerName(uint8_t peerId) const;
 
@@ -148,6 +152,13 @@ private:
 
     // Which level we last told everybody we were in, and which one somebody
     // else says they are in. The second is what "go to them" acts on.
+    //
+    // The strings in this group cross threads: the game thread writes them in
+    // PumpEvents and the transition code, and the panel reads them - and the
+    // Go there button writes some back - on the render thread inside Present.
+    // A std::string reassigned under a reader is a freed pointer in the
+    // reader's hands, so every cross-thread touch holds this lock.
+    Threading::Lock m_sceneShareLock;
     std::string m_publishedScene;
     float       m_sceneAnnounceIn = 0.f;
     std::string m_peerScene;
@@ -163,6 +174,10 @@ private:
     int         m_sceneLoadCheckpoint = -1;
     bool        m_sceneLoadPending    = false;
 
+    // For noticing the stage flip to Failed, which happens inside
+    // SceneSync::Update and returns no error string.
+    Coop::Game::SceneSync::Stage m_lastSceneStage = Coop::Game::SceneSync::Stage::Idle;
+
     // Watching whether the load actually happened. Writing the scene name makes
     // the game claim to be somewhere it is not, so a failed attempt has to be
     // taken back or the mod believes it arrived.
@@ -176,6 +191,11 @@ private:
     int  m_hostPort        = 47474;
     char m_chatInput[160]  = "";
 
+    // Written by AddLogLine from both threads - the panel's buttons run on
+    // the render thread and PumpEvents runs on the game thread - and read by
+    // the panel every frame. A deque being pushed while being iterated is heap
+    // corruption on a timer, so every touch goes through the lock.
+    Threading::Lock         m_logLock;
     std::deque<std::string> m_log;
 
     // Scene-change detection without a hook. CreateScene is hookable, but the
