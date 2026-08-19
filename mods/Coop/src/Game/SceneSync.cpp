@@ -1291,7 +1291,7 @@ namespace Coop::Game
         }
 
         static uint8_t  lastWindow[kTransitionWindowBytes] = {};
-        static uint8_t  lastLatchBits = 0xFF;
+        static uint32_t lastLatch = 0xFFFFFFFF;
         static bool     haveWindow = false;
 
         uint8_t  window[kTransitionWindowBytes] = {};
@@ -1305,9 +1305,12 @@ namespace Coop::Game
         // Best effort - a fault just leaves the latch reading zero.
         ReadTransitionLatch(LevelManager, &latch);
 
-        const uint8_t latchBits = static_cast<uint8_t>(latch & 0x3);
-
-        if (haveWindow && latchBits == lastLatchBits &&
+        // Re-log on ANY change of the window or the whole latch dword, not just
+        // the latch's low two bits: tearing a scene down clears bit 0x10, not
+        // the low bits, and that unload is exactly the step Go there is missing.
+        // The latch is stable in practice (0x00 idle, 0x10 with a scene loaded),
+        // so a full-dword compare captures every transition without spamming.
+        if (haveWindow && latch == lastLatch &&
             std::memcmp(window, lastWindow, sizeof(window)) == 0)
         {
             return;
@@ -1315,10 +1318,11 @@ namespace Coop::Game
 
         // Logged on every change so the game's OWN transitions confirm the
         // reading: start a mission from the menu and the byte at +0x34 should
-        // go 0 -> 1 -> 0 around the loading screen, and the low bits of the
-        // +0x6c latch move with it. If they do not, the fields are not where
-        // the dev build says, and the log will show it before anybody wonders
-        // why Go there did nothing.
+        // go 0 -> 1 -> 0 around the loading screen, and the +0x6c latch should
+        // move 0x00 -> 0x10 as the scene loads and back toward 0x00 as it is
+        // torn down. If they do not, the fields are not where the dev build
+        // says, and the log will show it before anybody wonders why Go there
+        // did nothing.
         Diag::Log("scene: transition window +34=%02X%02X%02X%02X pkglist=%02X%02X%02X%02X "
                   "preload=%02X%02X%02X%02X.%02X%02X%02X%02X  latch+6c=%08X",
                   window[0], window[1], window[2], window[3],
@@ -1328,7 +1332,7 @@ namespace Coop::Game
                   latch);
 
         std::memcpy(lastWindow, window, sizeof(lastWindow));
-        lastLatchBits = latchBits;
+        lastLatch = latch;
         haveWindow = true;
     }
 }
