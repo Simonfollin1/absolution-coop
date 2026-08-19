@@ -511,9 +511,10 @@ namespace Coop::Game
             float waited  = 0.f;
             bool  mountReady = false; // the library set finished streaming
             bool  fetched = false;   // the three stubs have been requested
-            bool  ready   = false;
+            bool  ready   = false;   // the fallback's resources are all in
             bool  fellBack = false;  // the manual pipeline has been tried
             bool  committed = false; // the engine has been handed the load
+            bool  fallbackBlocked = false; // the mount faulted; no fallback
         };
 
         Pending* g_pending = nullptr;
@@ -738,45 +739,58 @@ namespace Coop::Game
 
         Diag::Log("scene: %s (%s) checkpoint %d", entry->scene, entry->label, checkpointIndex);
 
-        // The order is the whole fix. The factory and blueprint are library
-        // resources - the top bit of their IDs says so - and they live inside
-        // the level's own package set, which is not mounted while the player
-        // is somewhere else. The first version asked for them cold, and the
-        // engine died looking up a library that was not resident: the log
-        // ended between two lines, twice, on two machines.
+        g_pending = new Pending(entry, checkpointIndex < 0 ? 0 : checkpointIndex);
+
+        // The load is ready to commit right now. Commit calls SwitchToScene -
+        // the engine's own mission-entry function, the one the menu uses - and
+        // that needs nothing but the scene path: it resolves the level's
+        // resources itself, on its own threads, behind a loading screen. The
+        // menu pre-mounts nothing, and neither does this.
         //
-        // So the header library is mounted first, through the same machinery
-        // the SDK's own mods use to spawn things from other levels' packages
-        // at runtime. Only when the whole set is resident are the scene's
-        // resources worth asking for.
-        Diag::Log("scene: mounting the level's libraries via %016llX", entry->headerLib);
+        // Earlier designs mounted the level's package set up front and made the
+        // whole load wait on it. That mount is the one engine call on this path
+        // that has actually faulted in a session, and when it did not fault it
+        // sometimes never finished streaming - either way it blocked a load
+        // that never needed it. It is gone from the primary path.
+        g_stage = Stage::Ready;
+
+        // The mount still has one job: the manual fallback (for the case the
+        // engine ignores the handover) resolves its resources out of it. So it
+        // is started here in the background, non-fatally - if it faults or
+        // never finishes, the fallback simply becomes unavailable and the
+        // primary load is untouched. Given Commit now calls the engine's own
+        // loader, the fallback is a rarely-reached last resort.
+        Diag::Log("scene: %s ready to commit; mounting libraries in the background "
+                  "for the fallback (%016llX)", entry->scene, entry->headerLib);
 
         MountContext mount;
         mount.headerLibId = entry->headerLib;
 
-        if (!RunGuarded(&DoMount, &mount) || !mount.library)
+        if (RunGuarded(&DoMount, &mount) && mount.library)
         {
-            FreeMount(mount.library, "the failed mount");
-
-            error = "the engine faulted mounting the level's libraries - the log has the last step";
-
-            g_stage = Stage::Failed;
-
-            return false;
+            g_pending->library = mount.library;
         }
+        else
+        {
+            FreeMount(mount.library, "the failed background mount");
 
-        g_pending = new Pending(entry, checkpointIndex < 0 ? 0 : checkpointIndex);
+            Diag::Log("scene: the background mount faulted - the fallback will be "
+                      "unavailable, the primary load is unaffected");
 
-        g_pending->library = mount.library;
-
-        g_stage = Stage::Streaming;
+            g_pending->fallbackBlocked = true;
+        }
 
         return true;
     }
 
     void SceneSync::Update(float deltaSeconds)
     {
-        if (!g_pending || g_pending->ready)
+        // This only advances the background mount that feeds the fallback. It
+        // never touches g_stage and never fails the load: the primary path is
+        // Commit -> SwitchToScene, which does not depend on any of this. When
+        // the mount is done (ready), gave up (blocked), or never started, there
+        // is nothing to do.
+        if (!g_pending || g_pending->ready || g_pending->fallbackBlocked || !g_pending->library)
         {
             return;
         }
@@ -785,35 +799,26 @@ namespace Coop::Game
 
         pending.waited += deltaSeconds;
 
-        // Phase one: the mount. The engine streams the library set in on its
-        // own threads while the game keeps running; this only watches.
+        auto giveUpOnFallback = [&pending](const char* why)
+        {
+            Diag::Log("scene: fallback resources unavailable - %s", why);
+            pending.fallbackBlocked = true;
+        };
+
+        // Phase one: watch the library set stream in.
         if (!pending.fetched)
         {
             PollContext poll;
             poll.library = pending.library;
 
-            if (!RunGuarded(&DoPoll, &poll))
-            {
-                Diag::Log("scene: polling the mount faulted");
-                Finish(Stage::Failed);
-
-                return;
-            }
-
-            if (poll.failed)
-            {
-                Diag::Log("scene: the library set failed to load after %.1f s", pending.waited);
-                Finish(Stage::Failed);
-
-                return;
-            }
+            if (!RunGuarded(&DoPoll, &poll)) { giveUpOnFallback("polling the mount faulted"); return; }
+            if (poll.failed)                 { giveUpOnFallback("the library set failed to load"); return; }
 
             if (!poll.ready)
             {
                 if (pending.waited >= kStreamTimeoutSeconds)
                 {
-                    Diag::Log("scene: gave up on the mount after %.0f s", pending.waited);
-                    Finish(Stage::Failed);
+                    giveUpOnFallback("the mount never finished streaming");
                 }
 
                 return;
@@ -821,28 +826,20 @@ namespace Coop::Game
 
             pending.mountReady = true;
 
-            Diag::Log("scene: library set resident after %.1f s - requesting the scene's resources",
-                      pending.waited);
-
             if (!pending.factory.Fetch(pending.entry->factory, "factory") ||
                 !pending.blueprint.Fetch(pending.entry->blueprint, "blueprint") ||
                 !pending.headerLib.Fetch(pending.entry->headerLib, "header library"))
             {
-                Finish(Stage::Failed);
+                giveUpOnFallback("a resource request faulted");
 
                 return;
             }
-
-            Diag::Log("scene: stubs - factory %s, blueprint %s, headerlib %s",
-                      Describe(pending.factory.Get()), Describe(pending.blueprint.Get()),
-                      Describe(pending.headerLib.Get()));
 
             if (!pending.factory.Get().Exists() ||
                 !pending.blueprint.Get().Exists() ||
                 !pending.headerLib.Get().Exists())
             {
-                Diag::Log("scene: the game does not recognise one of the level's resources");
-                Finish(Stage::Failed);
+                giveUpOnFallback("the game does not recognise one of the level's resources");
 
                 return;
             }
@@ -852,17 +849,12 @@ namespace Coop::Game
             return;
         }
 
-        // Phase two: the three stubs themselves. With the set resident these
-        // are usually ready immediately; this covers the gap if they are not.
+        // Phase two: the three stubs themselves.
         if (pending.factory.Get().Failed() ||
             pending.blueprint.Get().Failed() ||
             pending.headerLib.Get().Failed())
         {
-            Diag::Log("scene: a resource failed - factory %s, blueprint %s, headerlib %s",
-                      Describe(pending.factory.Get()), Describe(pending.blueprint.Get()),
-                      Describe(pending.headerLib.Get()));
-
-            Finish(Stage::Failed);
+            giveUpOnFallback("a resource failed to stream");
 
             return;
         }
@@ -871,31 +863,25 @@ namespace Coop::Game
             pending.blueprint.Get().IsReady() &&
             pending.headerLib.Get().IsReady())
         {
-            Diag::Log("scene: everything is in after %.1f s", pending.waited);
+            Diag::Log("scene: fallback resources are in after %.1f s", pending.waited);
 
             pending.ready = true;
-
-            g_stage = Stage::Ready;
 
             return;
         }
 
         if (pending.waited >= kStreamTimeoutSeconds)
         {
-            Diag::Log("scene: gave up after %.0f s - factory %s, blueprint %s, headerlib %s",
-                      pending.waited, Describe(pending.factory.Get()),
-                      Describe(pending.blueprint.Get()), Describe(pending.headerLib.Get()));
-
-            Finish(Stage::Failed);
+            giveUpOnFallback("the stubs never finished streaming");
         }
     }
 
     bool SceneSync::IsReadyToCommit()
     {
-        // The stage check matters: pending stays alive after Commit so the
-        // fallback has the resources, and without it the caller would commit
-        // again every frame.
-        return g_pending && g_pending->ready && g_stage.load() == Stage::Ready;
+        // Ready the frame after Begin - the primary load needs only the scene
+        // path. The stage check stops the caller committing again every frame
+        // after Commit has moved the stage on.
+        return g_pending && g_stage.load() == Stage::Ready;
     }
 
     bool SceneSync::Commit(std::string& error)
@@ -1039,9 +1025,23 @@ namespace Coop::Game
     {
         error.clear();
 
-        if (!g_pending || !g_pending->ready || g_pending->fellBack)
+        if (!g_pending || g_pending->fellBack)
         {
             error = "nothing in flight to fall back with";
+            return false;
+        }
+
+        // The fallback resolves its scene out of the background mount. If that
+        // mount faulted or never finished, there is nothing to fall back with -
+        // the primary SwitchToScene load was the only shot, and it is reported
+        // as such rather than pretending a hand-rolled teardown could help.
+        if (!g_pending->ready)
+        {
+            error = g_pending->fallbackBlocked
+                ? "the engine's own load did not take, and the fallback's "
+                  "libraries never mounted"
+                : "the engine's own load did not take, and the fallback's "
+                  "libraries are still streaming";
             return false;
         }
 

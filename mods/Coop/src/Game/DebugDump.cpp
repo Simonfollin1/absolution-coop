@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <sstream>
 
 #include <Glacier/ZLevelManager.h>
 #include <Glacier/Player/ZHitman5.h>
@@ -15,6 +16,7 @@
 
 #include "Game/DebugDump.h"
 #include "Game/BuildInfo.h"
+#include "Diag/Diag.h"
 #include "Game/ConfigVars.h"
 #include "Game/DownedState.h"
 #include "Game/HitInspector.h"
@@ -516,6 +518,21 @@ namespace Coop::Game
 
         file << "\n";
         file.close();
+
+        // Fold the whole thing into Coop.log as well, so a bug report is one
+        // file to send rather than two. The separate numbered file stays for
+        // anyone who wants it on its own, but nobody has to hunt for it.
+        {
+            std::ifstream readBack(path, std::ios::in | std::ios::binary);
+
+            if (readBack)
+            {
+                std::ostringstream buffer;
+                buffer << readBack.rdbuf();
+
+                Diag::LogBlock("full dump (also saved next to HMA.exe)", buffer.str());
+            }
+        }
 
         return path.string();
     }

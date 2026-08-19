@@ -57,16 +57,20 @@ byte-for-byte that it speaks the same protocol as the mod.
 
 ## When something's wrong
 
-It writes down what happened, so a bug report doesn't need screenshots:
+It writes down what happened, so a bug report doesn't need screenshots. One
+file has everything:
 
-- `mods\Coop.log` — the timeline. Every hit and what was in it, every key going
-  down, every checkpoint, every death, every time it armed or gave up.
-- `coop-dump-NNN.txt`, next to `HMA.exe` — the facts. Which build you're on,
-  what the keys compiled to, the player's vtables, the actor list, and all
-  sixteen hundred engine config variables. Written by itself six seconds into
-  the first level.
+- `mods\Coop.log` — the timeline *and* the facts. Every hit and what was in it,
+  every key, every checkpoint, every death, every time it armed or gave up —
+  and folded in, the full dump: which build you're on, the player's vtables,
+  the actor list, and all sixteen hundred engine config variables.
 
-Both are plain text. Send them as they are.
+**Send `mods\Coop.log`. That's the one.** (The same dump is also saved on its
+own as `coop-dump-NNN.txt` next to `HMA.exe` if you ever want it separately,
+and a hard crash leaves a `mods\Coop-crash.log` — but the log is the file to
+send.)
+
+Plain text. Send it as it is.
 
 ## Docs
 

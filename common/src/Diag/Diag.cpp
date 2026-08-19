@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 #include <Windows.h>
 
@@ -509,6 +510,32 @@ namespace Diag
 
         // Flush every line: an unflushed buffer is exactly the information we
         // lose when the process dies, which is the whole point of this file.
+        std::fflush(g_logFile);
+
+        LeaveCriticalSection(&g_lock);
+    }
+
+    void LogBlock(const char* title, const std::string& text)
+    {
+        if (!g_initialized || !g_logFile)
+        {
+            return;
+        }
+
+        EnterCriticalSection(&g_lock);
+
+        char timeText[32];
+        CurrentTime(timeText, sizeof(timeText));
+
+        std::fprintf(g_logFile, "[%s] ==== %s ====\n", timeText, title ? title : "block");
+        std::fwrite(text.data(), 1, text.size(), g_logFile);
+
+        if (!text.empty() && text.back() != '\n')
+        {
+            std::fputc('\n', g_logFile);
+        }
+
+        std::fprintf(g_logFile, "[%s] ==== end ====\n", timeText);
         std::fflush(g_logFile);
 
         LeaveCriticalSection(&g_lock);

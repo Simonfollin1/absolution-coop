@@ -18,6 +18,11 @@ namespace Diag
     // Appends a timestamped line and flushes it immediately.
     void Log(const char* format, ...);
 
+    // Appends a multi-line block verbatim, wrapped in a marked header and
+    // footer so it is findable. For folding the full dump into the one log
+    // the player sends, so a bug report is a single file rather than three.
+    void LogBlock(const char* title, const std::string& text);
+
     // Records where we are without touching the disk, so it costs nothing to
     // call every frame. The crash report prints the last value set.
     //
