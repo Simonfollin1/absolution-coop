@@ -2041,9 +2041,12 @@ void CoopMod::RenderSessionTab()
 
         const Game::SceneSync::Stage stage = Game::SceneSync::CurrentStage();
 
+        // Committed counts as loading too: the engine is building the level
+        // and a second press would tear the mount out from under it.
         const bool loading = m_sceneLoadPending
                           || stage == Game::SceneSync::Stage::Streaming
-                          || stage == Game::SceneSync::Stage::Ready;
+                          || stage == Game::SceneSync::Stage::Ready
+                          || stage == Game::SceneSync::Stage::Committed;
 
         ImGui::BeginDisabled(loading);
 
