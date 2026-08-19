@@ -187,6 +187,18 @@ namespace Coop::Game
         // checkpoint -1.
         constexpr uintptr_t kSwitchToSceneRva = 0x211870;
 
+        // What the game does on the line before SwitchToScene, every time it
+        // switches scene in-game. Read out of the retail binary: the two
+        // in-game callers both run
+        //     mov ecx, LevelManager ; call 0x5A90F0 ; ... ; call SwitchToScene
+        // and 0x5A90F0 is a one-line method that clears the low two bits of
+        // ZLevelManager+0x6c - a transition-state latch. Nothing in the first
+        // three designs did this, and the last test showed why it matters: the
+        // flag was set and the scene name changed, but the engine's main loop
+        // never picked the transition up. Clearing this latch first is how the
+        // game itself arms the main loop to notice.
+        constexpr uintptr_t kPrepareTransitionRva = 0x5A90F0;
+
         struct SwitchContext
         {
             void*          levelManager   = nullptr;
@@ -199,6 +211,13 @@ namespace Coop::Game
         void __cdecl DoSwitchToScene(void* raw)
         {
             auto* call = static_cast<SwitchContext*>(raw);
+
+            // The state reset the game runs immediately before every in-game
+            // SwitchToScene, on the level manager.
+            using PrepareFn = void(__thiscall*)(void*);
+
+            reinterpret_cast<PrepareFn>(BaseAddress + kPrepareTransitionRva)(
+                call->levelManager);
 
             using SwitchFn = void(__thiscall*)(void*, int, const void*, int, const void*,
                                                unsigned, unsigned, unsigned, unsigned,
