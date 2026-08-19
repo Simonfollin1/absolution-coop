@@ -23,7 +23,14 @@ namespace Coop::Net
         constexpr uint64_t kHandshakeTimeoutMs  = 10000;
         constexpr uint64_t kLinkTimeoutMs       = 8000;
         constexpr uint64_t kRetransmitIntervalMs = 250;
-        constexpr uint32_t kMaxRetransmits      = 24;
+
+        // How old a published state may be and still be worth repeating. The
+        // game thread stops publishing the moment a level load starts, and
+        // resending the pre-load snapshot with fresh timestamps kept peers
+        // seeing a live player standing still for the whole load - so a state
+        // nobody has refreshed goes quiet instead, and the staleness marking
+        // on the other end starts telling the truth.
+        constexpr uint64_t kStateRepeatWindowMs = 1500;
 
         // Deep enough that a burst of retransmissions cannot push a sequence
         // number out of the window before its ack arrives.
@@ -231,8 +238,9 @@ namespace Coop::Net
     {
         std::lock_guard<std::mutex> guard(m_outboundMutex);
 
-        m_localState      = state;
-        m_localStateValid = true;
+        m_localState            = state;
+        m_localStateValid       = true;
+        m_localStatePublishedMs = NowMs();
     }
 
     std::vector<PeerSnapshot> Session::SnapshotPeers() const
@@ -1076,14 +1084,14 @@ namespace Coop::Net
                 continue;
             }
 
-            if (pending.attempts >= kMaxRetransmits)
-            {
-                // Six seconds of no ack. The link timeout will finish the job;
-                // continuing to retransmit only wastes bandwidth.
-                iterator = link.pending.erase(iterator);
-                continue;
-            }
-
+            // No cap. The first version gave up after six seconds of no ack,
+            // reasoning the link timeout would finish the job - but the
+            // timeout needs total silence, and pings resume the moment a bad
+            // patch of wifi clears. A "reliable" message dropped while the
+            // link stays up is the worst of both worlds: PlayerLeft never
+            // lands, a checkpoint never pulls, and nothing anywhere says so.
+            // Four small packets a second until the ack or the link's death is
+            // the honest price.
             SendRaw(link.endpoint, pending.bytes.data(), pending.bytes.size());
 
             pending.lastSendMs = nowMs;
@@ -1232,7 +1240,8 @@ namespace Coop::Net
                 std::lock_guard<std::mutex> guard(m_outboundMutex);
 
                 state = m_localState;
-                valid = m_localStateValid;
+                valid = m_localStateValid &&
+                        nowMs - m_localStatePublishedMs <= kStateRepeatWindowMs;
             }
 
             if (valid)

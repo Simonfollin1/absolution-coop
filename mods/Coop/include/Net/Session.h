@@ -183,6 +183,7 @@ namespace Coop::Net
         mutable std::mutex       m_outboundMutex;
         StateMessage             m_localState;
         bool                     m_localStateValid = false;
+        uint64_t                 m_localStatePublishedMs = 0;
         std::deque<EventMessage> m_outboundEvents;
 
         mutable std::mutex       m_inboundMutex;
