@@ -320,6 +320,36 @@ namespace Coop::Game
             }
         }
 
+        // The HUD manager's request queue, from the binary: RequestStoryStart
+        // (0x7D66C0) writes 0x37 to +0x2E00 after gating on the ready byte +0x79
+        // and the fire byte +0x7F; the dispatcher treats {0x35,0x37,0x3C,0x3D}
+        // as the scene-transition group. Return-to-main-menu is almost certainly
+        // a sibling request in that family, so reading these three bytes while
+        // the player performs a manual menu return will name it - which is the
+        // last piece a fully automatic jump needs. Best effort: a fault (no HUD
+        // manager yet) just leaves the values at their init.
+        struct HudRequest { uint32_t request; uint8_t ready; uint8_t fire; bool ok; };
+
+        HudRequest ReadHudRequest(const void* hudManager)
+        {
+            HudRequest r{ 0xFFFFFFFF, 0xFF, 0xFF, false };
+
+            __try
+            {
+                const auto* base = reinterpret_cast<const uint8_t*>(hudManager);
+
+                r.request = *reinterpret_cast<const uint32_t*>(base + 0x2E00);
+                r.ready   = base[0x79];
+                r.fire    = base[0x7F];
+                r.ok      = true;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+            }
+
+            return r;
+        }
+
         bool ReadTransitionLatch(const void* levelManager, uint32_t* out)
         {
             __try
@@ -1350,5 +1380,44 @@ namespace Coop::Game
         std::memcpy(lastWindow, window, sizeof(lastWindow));
         lastLatch = latch;
         haveWindow = true;
+
+        TraceHudRequest();
+    }
+
+    // Separate from the window trace so it logs on its OWN change, not the
+    // level manager's - the request enum for a menu return moves without the
+    // transition window moving at all.
+    void SceneSync::TraceHudRequest()
+    {
+        if (!HUDManager)
+        {
+            return;
+        }
+
+        static uint32_t lastRequest = 0;
+        static uint8_t  lastFire    = 0xFF;
+        static bool     have        = false;
+
+        const HudRequest r = ReadHudRequest(HUDManager);
+
+        if (!r.ok)
+        {
+            return;
+        }
+
+        if (have && r.request == lastRequest && r.fire == lastFire)
+        {
+            return;
+        }
+
+        // 0x37 is story start, already known. Anything else fired from the menu
+        // - especially while the scene is being torn down - is the one to catch.
+        Diag::Log("hud: request queue +2E00=%08X ready+79=%02X fire+7F=%02X%s",
+                  r.request, r.ready, r.fire,
+                  r.request == 0x37 ? "  (0x37 = story start)" : "");
+
+        lastRequest = r.request;
+        lastFire    = r.fire;
+        have        = true;
     }
 }

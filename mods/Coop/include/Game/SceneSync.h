@@ -108,6 +108,11 @@ namespace Coop::Game
         // transitions before anything is bet on it.
         static void TraceTransitionWindow();
 
+        // Logs the HUD manager's request queue (+0x2E00) and its gate bytes on
+        // change. Story start writes 0x37 there; catching what a manual menu
+        // return writes is the last piece a fully automatic jump needs.
+        static void TraceHudRequest();
+
         // Throws away a load in progress without touching the world.
         static void Cancel();
 
