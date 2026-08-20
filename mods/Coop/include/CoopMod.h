@@ -241,6 +241,32 @@ private:
     // waiting on the disk when it went quiet, or was it idle and simply hung?
     std::atomic<bool> m_engineLoading{ false };
 
+    // What this machine is actually like.
+    //
+    // Every timeout in the jump path used to be a number somebody typed, which
+    // is another way of saying an assumption about the player's hardware. Thirty
+    // seconds was generous on the machine it was written on and shorter than a
+    // single honest load on a 2013 desktop with a mechanical drive - so the mod
+    // gave up on levels that were still arriving, and called the hardware a
+    // failure. A fixed number tuned for slow storage is the same mistake facing
+    // the other way: it makes everyone with an SSD wait.
+    //
+    // So nothing is assumed. The mod times the game's own loads - every level
+    // entered, including the ones the player starts from the menu - and sets its
+    // patience from the slowest one it has actually seen here. On a fast machine
+    // it stays tight; on a slow one it stretches to fit, without anyone being
+    // asked what kind of disk they have.
+    float m_loadingFor      = 0.f;
+    float m_longestLoadSeen = 0.f;
+    bool  m_wasLoading      = false;
+
+    // The same measurement, in milliseconds, for the watchdog thread.
+    std::atomic<uint32_t> m_stallThresholdMs{ 15000 };
+
+    // How long to wait for a load before concluding it is not coming, derived
+    // from the above rather than declared.
+    float LoadPatienceSeconds() const;
+
     char m_hostAddress[64] = "127.0.0.1:47474";
     char m_playerName[32]  = "Agent";
     char m_password[32]    = "";

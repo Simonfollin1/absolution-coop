@@ -287,6 +287,15 @@ namespace
     };
 }
 
+float CoopMod::LoadPatienceSeconds() const
+{
+    // Three times the slowest load this machine has actually done, with a floor
+    // for the case where nothing has been measured yet. Three, because a load
+    // that is going to arrive arrives in about the time the last one took, and
+    // anything past three times that is not slow - it is not coming.
+    return std::max(60.f, m_longestLoadSeen * 3.f);
+}
+
 void CoopMod::WatchdogMain()
 {
     Diag::NameCurrentThread("watchdog");
@@ -318,14 +327,15 @@ void CoopMod::WatchdogMain()
             continue;
         }
 
-        // What counts as a stall depends on the machine this runs on. A level
-        // load off a mechanical drive takes forty to sixty seconds on the
-        // hardware this is tested against, and the game thread goes quiet in
-        // long stretches while it waits on the disk - five seconds cried wolf
-        // there constantly. Fifteen lets an ordinary disk wait pass in
-        // silence, and the engine's own loading state is reported next to it,
-        // so slow storage is never written down as a hang.
-        if (!reported && now - lastMovedAt >= 15000)
+        // What counts as a stall is not a constant - it is a property of the
+        // machine. The game thread goes quiet in long stretches while it waits
+        // on a mechanical drive, and a fixed five seconds cried wolf on every
+        // one of them. The threshold is set from the slowest load actually
+        // measured here (see LoadPatienceSeconds), so it tightens on a fast
+        // machine and stretches on a slow one. The engine's own loading state
+        // is reported next to it, because a disk wait and a hang look identical
+        // from out here and only the engine knows which is which.
+        if (!reported && now - lastMovedAt >= m_stallThresholdMs.load(std::memory_order_relaxed))
         {
             reported = true;
 
@@ -895,6 +905,33 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
 
     m_engineLoading.store(engineLoading, std::memory_order_relaxed);
 
+    // Time the engine's own loads, whoever started them. The slowest one seen
+    // is this machine's honest answer to "how long does a level take here", and
+    // every timeout below is derived from it rather than assumed.
+    if (engineLoading)
+    {
+        m_loadingFor += deltaSeconds;
+    }
+    else
+    {
+        if (m_wasLoading && m_loadingFor > m_longestLoadSeen)
+        {
+            m_longestLoadSeen = m_loadingFor;
+
+            m_stallThresholdMs.store(
+                static_cast<uint32_t>(std::max(15000.f, m_longestLoadSeen * 500.f)),
+                std::memory_order_relaxed);
+
+            Diag::Log("timing: a level load on this machine took %.0f s - the mod "
+                      "will now wait up to %.0f s for one before giving up",
+                      m_longestLoadSeen, LoadPatienceSeconds());
+        }
+
+        m_loadingFor = 0.f;
+    }
+
+    m_wasLoading = engineLoading;
+
     if (Game::SceneSync::LevelTornDown() && !engineLoading)
     {
         m_tornDownFor += deltaSeconds;
@@ -934,12 +971,8 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
 
         std::string error;
 
-        // Ninety seconds, not thirty. A level load off a mechanical drive is
-        // measured at forty to sixty seconds on the hardware this is tested
-        // against, and giving up mid-load tears down a level that was going to
-        // arrive. The engine's loading flag holds the countdown below as well,
-        // but this is the number that has to survive a slow disk on its own.
-        m_sceneLoadWatch     = 90.f;
+        // Measured, not assumed - see LoadPatienceSeconds.
+        m_sceneLoadWatch     = LoadPatienceSeconds();
         m_sceneLoadPlayerWas = LevelManager ? LevelManager->GetHitman().GetRawPointer() : nullptr;
 
         if (!Game::SceneSync::Commit(error))
@@ -997,9 +1030,11 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
             // however long it takes - the countdown holds rather than expiring
             // into a teardown of a level that is half built, and the ten
             // seconds are the grace left once the loading screen goes away.
-            if (m_sceneLoadWatch < 20.f)
+            const float grace = std::max(20.f, m_longestLoadSeen * 0.5f);
+
+            if (m_sceneLoadWatch < grace)
             {
-                m_sceneLoadWatch = 20.f;
+                m_sceneLoadWatch = grace;
             }
         }
         else
@@ -1025,7 +1060,7 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
 
                 if (Game::SceneSync::TryFallback(fallbackError))
                 {
-                    m_sceneLoadWatch = 90.f;
+                    m_sceneLoadWatch = LoadPatienceSeconds();
 
                     AddLogLine("The engine ignored the handover - ran its pipeline "
                                "by hand instead, watching again");
