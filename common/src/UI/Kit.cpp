@@ -222,9 +222,14 @@ namespace Kit
         // The fonts are built at 32 px and io.FontGlobalScale is the screen's
         // height over 2048, so the size ImGui reports already carries the
         // screen. Sixteen is the design size these numbers were drawn at.
+        //
+        // Floored at 1: the mockup is scale 1, and on a modest window the font
+        // scale comes out below it, which shrank the whole card - width,
+        // padding, spacing and text all - well under the design. Never smaller
+        // than the mockup; larger only on a screen tall enough to earn it.
         const float size = ImGui::GetFontSize();
 
-        return size > 1.f ? size / 16.f : 1.f;
+        return size > 16.f ? size / 16.f : 1.f;
     }
 
     ImFont* Regular()
@@ -254,8 +259,8 @@ namespace Kit
         ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.f);
         ImGui::PushStyleColor(ImGuiCol_WindowBg, c.bg0);
 
-        ImGui::SetNextWindowSizeConstraints(At(440.f * s, 340.f * s), At(FLT_MAX, FLT_MAX));
-        ImGui::SetNextWindowSize(At(560.f * s, 540.f * s), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSizeConstraints(At(520.f * s, 420.f * s), At(FLT_MAX, FLT_MAX));
+        ImGui::SetNextWindowSize(At(560.f * s, 640.f * s), ImGuiCond_FirstUseEver);
 
         constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar
                                          | ImGuiWindowFlags_NoScrollbar
@@ -420,7 +425,9 @@ namespace Kit
         const Metrics& m = Size();
         const float    s = Scale();
 
-        ImGui::Dummy(At(0.f, m.lg * s));
+        // Design: 24 above a heading, 12 below it. The generous top gap is what
+        // separates one group of rows from the previous group.
+        ImGui::Dummy(At(0.f, m.xl * s));
 
         const ImVec2 min = ImGui::GetCursorScreenPos();
         const float  height = m.sectionSize * s * 1.6f;
@@ -431,7 +438,7 @@ namespace Kit
                min, At(min.x + ImGui::GetContentRegionAvail().x, min.y + height),
                c.textDim, text);
 
-        ImGui::Dummy(At(0.f, m.sm * s));
+        ImGui::Dummy(At(0.f, m.md * s));
     }
 
     bool ToggleRow(const char* label, bool* value, const char* keyHint)

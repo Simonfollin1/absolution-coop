@@ -55,7 +55,7 @@ namespace Kit
 
         float headerHeight =  52.f;
         float navHeight    =  44.f;
-        float rowHeight    =  46.f;
+        float rowHeight    =  52.f;   // design --h-row
 
         // The right-hand rail. Every row puts its control and its key chip at
         // the same two x positions regardless of how long the label is, which
