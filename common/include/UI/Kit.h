@@ -95,7 +95,9 @@ namespace Kit
     void EndNav();
 
     // The scrolling area under the nav, with the card's padding applied.
-    void BeginBody();
+    // reserveBottomPx (design pixels) leaves a strip below the scrolling body
+    // for a pinned footer; 0 fills the card.
+    void BeginBody(float reserveBottomPx = 0.f);
     void EndBody();
 
     // --- rows ---------------------------------------------------------------

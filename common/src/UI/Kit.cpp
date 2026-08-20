@@ -18,21 +18,28 @@ namespace Kit
                  | (((hex >> 16) & 0xFFu) << IM_COL32_R_SHIFT);
         }
 
+        // Amaranth red - the accent means "press this", and because black on
+        // this red is unreadable (3.4:1 at body size), everything that sits on
+        // the accent is near-white (--on-accent). White on the accent is 5.3:1.
+        // The greys carry a few percent of the accent's hue so they lean warm
+        // rather than neutral - a red header on flat-grey rows reads as two
+        // designs stapled together. The alarm (danger) is a hotter red than the
+        // accent and is kept back for the one state that is an emergency.
         const Palette kPalette = {
-            Rgb(0xB8F27A),   // accent
-            Rgb(0xC9F79A),   // accentHover
-            Rgb(0x101408),   // onAccent
+            Rgb(0xCE1924),   // accent      - Amaranth red, "press this"
+            Rgb(0xDB1E2B),   // accentHover
+            Rgb(0xFAFAFA),   // onAccent    - near-white, the readable side of red
 
-            Rgb(0x131313),   // bg0
-            Rgb(0x1E1E1E),   // bg1
-            Rgb(0x282828),   // bg2
-            Rgb(0x343434),   // bg3
+            Rgb(0x161413),   // bg0         - the card
+            Rgb(0x201D1B),   // bg1         - a row on the card
+            Rgb(0x2A2624),   // bg2         - a row under the cursor, and chips
+            Rgb(0x36322E),   // bg3         - the inactive half of a toggle, chip end-caps
 
-            Rgb(0xF0F0F0),   // text
-            Rgb(0x9A9A9A),   // textDim
-            Rgb(0x666666),   // textFaint
+            Rgb(0xF1F0EE),   // text
+            Rgb(0x9D9A96),   // textDim     - labels that are not the point
+            Rgb(0x66635F),   // textFaint   - present but not worth reading
 
-            Rgb(0xFF6B6B),   // danger
+            Rgb(0xFF6B60),   // danger      - the alarm, hotter than the accent
         };
 
         const Metrics kMetrics = {};
@@ -383,7 +390,7 @@ namespace Kit
         ImGui::NewLine();
     }
 
-    void BeginBody()
+    void BeginBody(float reserveBottomPx)
     {
         const Metrics& m = Size();
         const float    s = Scale();
@@ -391,7 +398,8 @@ namespace Kit
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, At(m.lg * s, m.md * s));
         ImGui::PushStyleColor(ImGuiCol_ChildBg, Colors().bg0);
 
-        ImGui::BeginChild("##body", At(0.f, 0.f), false);
+        // A negative height leaves that many pixels below the child for a footer.
+        ImGui::BeginChild("##body", At(0.f, -reserveBottomPx * s), false);
 
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, At(0.f, 0.f));
     }

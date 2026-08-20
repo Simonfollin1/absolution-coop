@@ -73,6 +73,14 @@ private:
     void UpdateDownedFlow(float deltaSeconds);
 
     void RenderWindow();
+    // The redesign: two tabs and a footer, drawn through Kit. Host carries the
+    // whole session - who is with you, following somebody into their mission,
+    // and setting one up. How-to is the standing reference.
+    void RenderHostTab();
+    void RenderHowToTab();
+    void RenderFooter();
+    // The original four-tab panel. Kept for now as the source the drawer will
+    // be assembled from; no longer reached from the nav.
     void RenderSessionTab();
     void RenderPlayersTab();
     void RenderRulesTab();
@@ -149,6 +157,10 @@ private:
     // UI state
     bool m_isOpen      = false;
     bool m_showOverlay = true;
+
+    // The two tabs of the redesigned panel.
+    enum class Tab { Host, HowTo };
+    Tab m_tab = Tab::Host;
 
     bool m_useUpnp = true;
 

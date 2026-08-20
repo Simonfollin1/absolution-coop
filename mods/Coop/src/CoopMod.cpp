@@ -29,6 +29,7 @@
 #include "Memory/GameOffsets.h"
 #include "Game/ModPresence.h"
 #include "UI/CursorFocus.h"
+#include "UI/Kit.h"
 #include "Diag/Diag.h"
 
 using namespace Coop;
@@ -2370,53 +2371,298 @@ void CoopMod::RenderHudOverlay()
     ImGui::End();
 }
 
+// The card, drawn through Kit: an accent header, two nav pills, a scrolling
+// body, and a pinned footer that carries the connection so it never takes the
+// top of a tab. Everything the four old tabs did is still in the file below;
+// the redesign reaches Host and How-to, and the settings move to a drawer next.
 void CoopMod::RenderWindow()
 {
-    ImGui::SetNextWindowSize(ImVec2(620.f, 500.f), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowPos(ImVec2(120.f, 120.f), ImGuiCond_FirstUseEver);
+    // The strip the footer sits in, in design pixels. The body reserves it so a
+    // long player list scrolls above the connection line rather than over it.
+    constexpr float kFooterHeight = 40.f;
 
-    if (!ImGui::Begin("Absolution Co-op", &m_isOpen))
+    if (!Kit::BeginPanel("##CoopPanel", "Co-op", &m_isOpen))
     {
-        ImGui::End();
+        // BeginPanel has already ended the window and popped its style.
         return;
     }
 
-    // Four tabs. There were six: one browsed all 1648 engine configuration
-    // variables, which the automatic dump now writes to a file in full, and one
-    // was a research bench full of live readouts of things that cannot be read
-    // live - the SDK takes the keyboard whenever this panel is open, so nobody
-    // has ever seen a key indicator light up or a hit land. Those readings all
-    // go to the log now, where they can be read afterwards and sent to somebody.
-    if (ImGui::BeginTabBar("CoopTabs"))
+    Kit::BeginNav();
+    if (Kit::NavPill("Host",   m_tab == Tab::Host))  m_tab = Tab::Host;
+    if (Kit::NavPill("How to", m_tab == Tab::HowTo)) m_tab = Tab::HowTo;
+    Kit::EndNav();
+
+    Kit::BeginBody(kFooterHeight);
+
+    switch (m_tab)
     {
-        if (ImGui::BeginTabItem("Session"))
-        {
-            RenderSessionTab();
-            ImGui::EndTabItem();
-        }
-
-        if (ImGui::BeginTabItem("Players"))
-        {
-            RenderPlayersTab();
-            ImGui::EndTabItem();
-        }
-
-        if (ImGui::BeginTabItem("Rules"))
-        {
-            RenderRulesTab();
-            ImGui::EndTabItem();
-        }
-
-        if (ImGui::BeginTabItem("Diagnostics"))
-        {
-            RenderDiagnosticsTab();
-            ImGui::EndTabItem();
-        }
-
-        ImGui::EndTabBar();
+    case Tab::Host:  RenderHostTab();  break;
+    case Tab::HowTo: RenderHowToTab(); break;
     }
 
-    ImGui::End();
+    Kit::EndBody();
+
+    RenderFooter();
+
+    Kit::EndPanel();
+}
+
+void CoopMod::RenderHostTab()
+{
+    const bool active = m_session.IsActive();
+
+    // The scene strings cross threads: the game thread owns them, so take a copy
+    // under the lock before touching any of it on this, the render thread.
+    std::string peerScene, peerOwner, published, sceneError;
+    int         peerCheckpoint = -1;
+
+    {
+        Threading::ReadGuard guard(m_sceneShareLock);
+
+        peerScene      = m_peerScene;
+        peerOwner      = m_peerSceneOwner;
+        published      = m_publishedScene;
+        sceneError     = m_sceneError;
+        peerCheckpoint = m_peerSceneCheckpoint;
+    }
+
+    const bool peerElsewhere = active && !peerScene.empty() && published != peerScene;
+
+    // ---- Somebody is already in a mission: the old "Go there", by name -------
+    if (peerElsewhere)
+    {
+        const std::string who  = peerOwner.empty() ? "Somebody" : peerOwner;
+        const std::string lead = who + " is already playing";
+
+        Kit::Text(lead.c_str());
+
+        const std::string detail = peerCheckpoint >= 0
+            ? std::format("Checkpoint {} - joining restarts you into their level", peerCheckpoint)
+            : std::string("Joining restarts you into their level");
+
+        Kit::TextDim(detail.c_str());
+        Kit::Gap(12.f);
+
+        const Game::SceneSync::Stage stage = Game::SceneSync::CurrentStage();
+
+        // Committed counts as loading too: the engine is building the level and
+        // a second press would tear the mount out from under it.
+        const bool loading = m_sceneLoadPending
+                          || stage == Game::SceneSync::Stage::Streaming
+                          || stage == Game::SceneSync::Stage::Ready
+                          || stage == Game::SceneSync::Stage::Committed;
+
+        if (loading)
+        {
+            Kit::TextDim(Game::SceneSync::StatusLine());
+        }
+        else
+        {
+            const std::string join = peerOwner.empty() ? "Join" : ("Join " + peerOwner);
+
+            if (Kit::Button(join.c_str(), true))
+            {
+                // The UI -> engine seam, unchanged from the old button: set three
+                // fields under the lock and let the game thread run the load. A
+                // scene load tears down and rebuilds the world, which must not
+                // happen here inside Present.
+                {
+                    Threading::WriteGuard guard(m_sceneShareLock);
+
+                    m_sceneLoadRequest    = peerScene;
+                    m_sceneLoadCheckpoint = peerCheckpoint;
+                    m_sceneLoadPending    = true;
+
+                    m_sceneError.clear();
+                }
+
+                AddLogLine(std::format("Joining {}", peerScene));
+            }
+        }
+
+        if (!sceneError.empty())
+        {
+            Kit::Danger(sceneError.c_str());
+        }
+    }
+
+    // ---- In a session: who is with you --------------------------------------
+    if (active)
+    {
+        Kit::SectionLabel("Players");
+
+        if (m_playerName[0] != '\0')
+        {
+            Kit::InfoRow(m_playerName, "you");
+        }
+
+        for (const Game::AvatarView& view : m_avatars.Views())
+        {
+            const char* where = view.loading  ? "loading"
+                              : view.stale    ? "no signal"
+                              : view.dead     ? "down"
+                              : view.sameArea ? "here"
+                                              : "away";
+
+            Kit::InfoRow(view.name.c_str(), where);
+        }
+
+        // The address to hand out, read once and then never again - so it lives
+        // down here rather than at the top.
+        const std::string external = m_portMapper.ExternalAddress();
+
+        if (!external.empty())
+        {
+            Kit::Gap(8.f);
+            Kit::InfoRow("Give them", external.c_str());
+        }
+
+        Kit::SectionLabel("Say something");
+
+        Kit::PushInputStyle();
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+
+        const bool submitted = ImGui::InputText("##chat", m_chatInput, sizeof(m_chatInput),
+                                                ImGuiInputTextFlags_EnterReturnsTrue);
+        Kit::PopInputStyle();
+
+        if (submitted && m_chatInput[0] != '\0')
+        {
+            Net::EventMessage message;
+            message.type = Net::EventType::Chat;
+            message.text = m_chatInput;
+
+            m_session.SendEvent(message);
+            AddLogLine(std::format("you: {}", m_chatInput));
+
+            m_chatInput[0] = '\0';
+        }
+
+        Kit::Gap(16.f);
+
+        if (Kit::Button("Leave"))
+        {
+            m_session.Leave();
+            m_portMapper.Release();
+
+            AddLogLine("Left the session");
+        }
+
+        return;
+    }
+
+    // ---- Not in a session: set one up, or join by address -------------------
+    Kit::SectionLabel("You");
+
+    Kit::PushInputStyle();
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+    ImGui::InputText("##name", m_playerName, sizeof(m_playerName));
+    Kit::PopInputStyle();
+
+    Kit::Gap(20.f);
+
+    Kit::Text("Start a session");
+    Kit::TextDim(std::format("Opens port {} over UPnP. Nothing to set up in the router.",
+                             m_hostPort).c_str());
+    Kit::Gap(10.f);
+
+    if (Kit::Button("Host", true))
+    {
+        if (m_session.Host(static_cast<uint16_t>(m_hostPort), m_playerName, m_password))
+        {
+            m_progression.ResetForNewSession();
+            Game::TheDownedState().ResetForNewSession();
+            AddLogLine(std::format("Hosting on UDP {}", m_hostPort));
+
+            if (m_useUpnp)
+            {
+                m_portMapper.RequestMap(static_cast<uint16_t>(m_hostPort));
+            }
+        }
+    }
+
+    Kit::SectionLabel("Or join somebody");
+
+    Kit::PushInputStyle();
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+    ImGui::InputText("##addr", m_hostAddress, sizeof(m_hostAddress));
+    Kit::PopInputStyle();
+
+    Kit::Gap(10.f);
+
+    if (Kit::Button("Join"))
+    {
+        if (m_session.Join(m_hostAddress, static_cast<uint16_t>(m_hostPort),
+                           m_playerName, m_password))
+        {
+            m_progression.ResetForNewSession();
+            Game::TheDownedState().ResetForNewSession();
+            AddLogLine(std::format("Connecting to {}", m_hostAddress));
+        }
+    }
+}
+
+void CoopMod::RenderHowToTab()
+{
+    Kit::SectionLabel("Playing together");
+    Kit::TextWrapped(
+        "One of you presses Host - the port opens itself over UPnP. Send the "
+        "others the address at the bottom of this panel, they paste it and press "
+        "Join. Start a mission, and everyone else gets a Join button and lands "
+        "in the same level.");
+
+    Kit::SectionLabel("What is shared");
+    Kit::TextWrapped(
+        "Players, markers and going down. Guards, bodies and alarms are yours "
+        "alone - two people in the same room see the same building and different "
+        "guards.");
+
+    Kit::SectionLabel("Keys");
+    Kit::InfoRow("Open this panel",             m_keyToggle.c_str());
+    Kit::InfoRow("Get up, or follow a teammate", m_keyFollow.c_str());
+    Kit::InfoRow("Drop a marker",               m_keyMarker.c_str());
+    Kit::InfoRow("See teammates through walls", "Hold Ctrl");
+
+    Kit::SectionLabel("If it does not work");
+    Kit::TextWrapped(
+        "No UPnP: forward 47474, TCP and UDP, on the machine that hosts. Anything "
+        "else: send mods/Coop.log - it already holds everything the mod did.");
+}
+
+void CoopMod::RenderFooter()
+{
+    const Kit::Palette& c = Kit::Colors();
+    const float         s = Kit::Scale();
+
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+
+    const ImVec2 origin = ImGui::GetWindowPos();
+    const float  width  = ImGui::GetWindowWidth();
+    const float  height = ImGui::GetWindowHeight();
+
+    const float pad = 24.f * s;
+    const float top = origin.y + height - 40.f * s;
+
+    drawList->AddRectFilled(ImVec2(origin.x, top),
+                            ImVec2(origin.x + width, top + 1.f), c.bg2);
+
+    const Net::SessionStatus status = m_session.Status();
+
+    const float  centre = top + 20.f * s;
+    const ImU32  dot    = ImGui::GetColorU32(StatusColour(status.mode));
+
+    drawList->AddCircleFilled(ImVec2(origin.x + pad, centre), 4.f * s, dot);
+
+    std::string line = StatusText(status.mode);
+
+    if (!status.lastError.empty())
+    {
+        line += " - " + status.lastError;
+    }
+
+    drawList->AddText(Kit::Regular(), 12.f * s,
+                      ImVec2(origin.x + pad + 12.f * s, centre - 7.f * s),
+                      c.textDim, line.c_str());
 }
 
 void CoopMod::RenderSessionTab()
