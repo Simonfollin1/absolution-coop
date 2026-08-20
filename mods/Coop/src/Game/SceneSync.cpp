@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <new>
@@ -200,6 +201,43 @@ namespace Coop::Game
         // disk and only meaningful once the game has initialised - which it has
         // by the time anyone is in a level pressing Go there.
         constexpr uintptr_t kDefaultStartTokenRva = 0xD4C7CC;
+
+        // Hand the engine a scene string it will intern into a real pool atom.
+        //
+        // pavledev's SDK reimplements ZString and does not intern: its
+        // const-char* constructor marks a string "borrowed" (top length bit
+        // 0x80000000) and ZString::CopyFrom mints a plain heap buffer with both
+        // top bits clear. The retail engine reads both-top-bits-clear as "this is
+        // already an interned pool atom, m_chars-0xc is its header" - so a
+        // CopyFrom'd string handed to the engine is adopted as an atom it never
+        // owned, and freed as one when the level tears down. That is the
+        // return-to-menu crash: ZString::ReleaseAtom (HMA.exe 0xF85D0) hashes a
+        // string that is in no bucket and reads through null. See RE-NOTES.md.
+        //
+        // The engine interns a source into a genuine refcounted atom only when
+        // the source's length word carries 0x40000000: operator= then
+        // find-or-inserts the characters into the pool (HMA.exe 0x8E2C40) and the
+        // destination owns a real atom, released cleanly at teardown. The SDK
+        // never sets that bit, so set it by hand over a borrowed view. The engine
+        // copies the characters during the assignment, so the view's buffer only
+        // has to outlive that one engine call.
+        void FlagForIntern(ZString& source)
+        {
+            static_assert(sizeof(ZString) == sizeof(std::uint32_t) + sizeof(const char*),
+                          "ZString must be {length word, chars} for the intern flag "
+                          "to land on the length word");
+
+            std::uint32_t& lengthWord = *reinterpret_cast<std::uint32_t*>(&source);
+            lengthWord = (lengthWord & 0x3FFFFFFFu) | 0x40000000u;
+        }
+
+        // ZString::operator= (HMA.exe VA 0x7F2630, RVA 0x3F2630), the engine's
+        // own. Called directly only where the assignment must intern now, while
+        // the source characters are still alive, rather than through a scene call
+        // that would do it later. __thiscall: destination in ecx, one stack arg.
+        constexpr uintptr_t kZStringAssignRva = 0x3F2630;
+
+        using ZStringAssignFn = void*(__thiscall*)(void* destination, const void* source);
 
         struct SwitchContext
         {
@@ -511,11 +549,18 @@ namespace Coop::Game
             {
                 SSceneInitParameters initParameters;
 
-                const ZString scenePath(call->scene);
-                const ZString streaming("");
+                // Flagged for interning: SetSceneInitParameters is the engine's
+                // own assignment into the scene context, so it interns these into
+                // real pool atoms as it copies them. CopyFrom here instead left
+                // non-atoms in the context that faulted when it was torn down.
+                ZString sceneResourceName(call->scene);
+                FlagForIntern(sceneResourceName);
 
-                initParameters.m_SceneResource  = ZString::CopyFrom(scenePath);
-                initParameters.m_StreamingState = ZString::CopyFrom(streaming);
+                ZString streamingState("");
+                FlagForIntern(streamingState);
+
+                initParameters.m_SceneResource  = sceneResourceName;
+                initParameters.m_StreamingState = streamingState;
 
                 reinterpret_cast<void(__thiscall*)(void*, const SSceneInitParameters&)>(
                     call->function)(call->context, initParameters);
@@ -769,9 +814,16 @@ namespace Coop::Game
             return false;
         }
 
-        const ZString view(sceneResource.c_str());
+        ZString view(sceneResource.c_str());
+        FlagForIntern(view);
 
-        LevelManager->GetSceneParameters().sSceneResource = ZString::CopyFrom(view);
+        // Assign through the engine's own operator= so the name is interned into
+        // a pool atom now, while sceneResource is still alive. A plain SDK
+        // assignment only bit-copies the pending pointer into the level manager
+        // and would intern it later, once the characters may be gone; a CopyFrom
+        // string would be a non-atom the engine faults freeing.
+        reinterpret_cast<ZStringAssignFn>(BaseAddress + kZStringAssignRva)(
+            &LevelManager->GetSceneParameters().sSceneResource, &view);
 
         return true;
     }
@@ -1035,13 +1087,14 @@ namespace Coop::Game
         // flag, and makes two more calls besides. So this calls it too, and
         // stops guessing which of its effects mattered.
         //
-        // The path has to outlive the call, and it has to be a string the
-        // engine owns: SwitchToScene assigns it with ZString::operator=, and
-        // assigning from an unallocated literal-backed ZString hands the
-        // engine a pointer into this module. CopyFrom allocates through the
-        // game's own allocator, which is what makes the copy real.
-        const ZString view(pending.entry->scene);
-        const ZString scene = ZString::CopyFrom(view);
+        // The path has to become a string the engine owns. SwitchToScene assigns
+        // it with the engine's own ZString::operator=; FlagForIntern marks it so
+        // that assignment interns it into a real pool atom instead of the engine
+        // adopting a non-atom. ZString::CopyFrom here - the SDK's, which does not
+        // intern - is what planted a non-atom in the level manager and crashed
+        // the engine's teardown on the way back to the menu. See FlagForIntern.
+        ZString scene(pending.entry->scene);
+        FlagForIntern(scene);
 
         // The start checkpoint, the bonus token, and bUseSaveGame are all set
         // inside DoSwitchToScene, copied from the game's own story-start caller.

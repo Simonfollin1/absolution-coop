@@ -1133,3 +1133,51 @@ soft. But their *meanings* could not be proven from a static image:
 - **`finaleExplosion`** (root `0xD610B4`, walk `{0x8,0x5FC,0x10,0x74,0x508}`).
   The root is a real dereferenceable container pointer, but the object is
   generic and the five-step heap walk can't be traced statically.
+
+## The SDK's ZString is not the engine's ZString (and how to hand one over)
+
+The retail engine's `ZString` is an interned, refcounted atom. The layout is
+`{ uint32_t m_length; const char* m_chars; }`; the top two bits of `m_length`
+are a tag and `Length() == m_length & 0x3FFFFFFF`:
+
+- `0x80000000` — **borrowed**: `m_chars` is a raw pointer the string does not
+  own (the retail `const char*` constructor).
+- `0x40000000` — **raw, intern me**: a plain buffer the next assignment should
+  intern into a pool atom.
+- both bits clear — **owned atom**: `m_chars` points at `atom + 0xc`; the atom
+  header is `[len @0, refcount @4, next @8]` and lives in the process-wide
+  interned-string pool (table `0x10C6D70`, `0x20000` buckets, FNV-1a).
+
+`ZString::operator=` (VA `0x7F2630`, RVA `0x3F2630`) branches on the **source**
+tag: `0x40000000` → find-or-insert the characters into the pool (VA `0x8E2C40`,
+refcount 1, linked into its bucket) so the destination owns a real atom;
+`0x80000000` → copy the pointer and the tag (destination stays borrowed);
+both-bits-clear → treat the source's `m_chars` as an existing atom and refcount-
+share it. `~ZString` (VA `0x820460`) releases (VA `0xF85D0`) only when the tag
+is both-bits-clear.
+
+**pavledev's SDK reimplements `ZString` and does not intern.** Its `const char*`
+constructor tags `0x80000000` (borrowed) and its `Allocate`/`CopyFrom` mint a
+plain `malloc`'d buffer with **both tag bits clear** — the exact bit pattern the
+engine reads as "already an owned atom, `m_chars - 0xc` is the header." So a
+`ZString::CopyFrom(...)` handed to the engine is adopted as an atom it never
+owned: the engine addrefs `m_chars - 8` (corrupting the allocator header) and,
+when the value is released, calls `ReleaseAtom(m_chars - 0xc)`, which hashes a
+string that is in no bucket and reads through null. This is the return-to-menu
+crash — the co-op level's scene name, planted into the level manager by the
+"follow into mission" load and freed as an atom when the engine loads the menu
+scene over it (`ZEntitySceneContext::SetSceneInitParameters`, VA `0x742130`,
+overwrites `m_SceneInitParameters.m_SceneResource` at context `+0x58`).
+
+**Rule: never hand the engine a `CopyFrom`'d SDK string.** To give the engine a
+scene name it can own and free safely, set the source tag to `0x40000000` by
+hand (over a borrowed view) so the engine's assignment interns it into a real
+atom; the engine copies the characters during that assignment, so the view's
+buffer only has to outlive the one engine call. Where the assignment is a scene
+call (`SwitchToScene`, `SetSceneInitParameters`) the engine does the interning
+`operator=` itself; where the mod would otherwise assign straight into an engine
+slot (`SetSceneName`), call the engine's `operator=` (RVA `0x3F2630`) directly so
+it interns now, while the source characters are still alive. See
+`FlagForIntern` in `mods/Coop/src/Game/SceneSync.cpp`. This supersedes the older
+note above that treated `CopyFrom` as "the copy the engine owns" — `CopyFrom`
+owns a buffer, but not a pool atom, which is the distinction that matters.
