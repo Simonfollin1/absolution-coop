@@ -183,6 +183,46 @@ namespace
         return false;
     }
 
+    // How many bytes are safely readable from addr, capped at want. The crash
+    // handler dereferences a faulting register to show what it pointed at, and
+    // that pointer is by definition suspect - so this asks the OS first and
+    // never itself faults. Stays inside the one committed region VirtualQuery
+    // reports, so a read that starts valid can never walk into an unmapped page.
+    size_t ReadableBytes(uintptr_t addr, size_t want)
+    {
+        if (addr == 0)
+        {
+            return 0;
+        }
+
+        MEMORY_BASIC_INFORMATION info{};
+
+        if (VirtualQuery(reinterpret_cast<void*>(addr), &info, sizeof(info)) != sizeof(info))
+        {
+            return 0;
+        }
+
+        if (info.State != MEM_COMMIT)
+        {
+            return 0;
+        }
+
+        constexpr DWORD readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY
+                                 | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE
+                                 | PAGE_EXECUTE_WRITECOPY;
+
+        if ((info.Protect & readable) == 0 || (info.Protect & PAGE_GUARD) != 0)
+        {
+            return 0;
+        }
+
+        const uintptr_t regionEnd =
+            reinterpret_cast<uintptr_t>(info.BaseAddress) + info.RegionSize;
+        const size_t avail = regionEnd - addr;
+
+        return avail < want ? avail : want;
+    }
+
     void WriteReport(const char* text)
     {
         const HANDLE file = CreateFileA(g_crashPath, FILE_APPEND_DATA, FILE_SHARE_READ,
@@ -369,6 +409,55 @@ namespace
         append("  eip %08X  esp %08X  ebp %08X\n", context.Eip, context.Esp, context.Ebp);
         append("  eax %08X  ebx %08X  ecx %08X  edx %08X\n", context.Eax, context.Ebx, context.Ecx, context.Edx);
         append("  esi %08X  edi %08X\n", context.Esi, context.Edi);
+
+        // What the registers point at. A fault inside a container or a
+        // refcounted structure names itself here: a released ZString atom, for
+        // instance, shows its length and refcount in the first bytes and its
+        // characters in the ascii column, so the string being freed is legible
+        // straight from the report without a full-memory dump. Guarded, so a
+        // wild register value just reads "<unreadable>" instead of re-faulting.
+        {
+            append("\nmemory at registers (guarded, up to 64 bytes: hex | ascii)\n");
+
+            const struct { const char* name; uintptr_t value; } probes[] = {
+                { "eax", context.Eax }, { "ebx", context.Ebx },
+                { "ecx", context.Ecx }, { "edx", context.Edx },
+                { "esi", context.Esi }, { "edi", context.Edi },
+            };
+
+            for (const auto& probe : probes)
+            {
+                const size_t count = ReadableBytes(probe.value, 64);
+
+                if (count == 0)
+                {
+                    append("  %s %08X  <unreadable>\n",
+                        probe.name, static_cast<unsigned int>(probe.value));
+
+                    continue;
+                }
+
+                const uint8_t* bytes = reinterpret_cast<const uint8_t*>(probe.value);
+
+                char hex[3 * 64 + 1];
+                char ascii[64 + 1];
+                size_t hexUsed = 0;
+
+                for (size_t i = 0; i < count; ++i)
+                {
+                    std::snprintf(hex + hexUsed, sizeof(hex) - hexUsed, "%02X ", bytes[i]);
+                    hexUsed += 3;
+                    ascii[i] = (bytes[i] >= 32 && bytes[i] < 127)
+                                   ? static_cast<char>(bytes[i])
+                                   : '.';
+                }
+
+                ascii[count] = '\0';
+
+                append("  %s %08X  %s| %s\n",
+                    probe.name, static_cast<unsigned int>(probe.value), hex, ascii);
+            }
+        }
 
         append("\nstack (addresses that land inside a module)\n");
 
