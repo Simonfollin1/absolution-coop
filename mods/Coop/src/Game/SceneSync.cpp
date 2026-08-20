@@ -108,23 +108,9 @@ namespace Coop::Game
 
         // ---- the guarded engine touches, one small function each ----------
 
-        struct MountContext
-        {
-            uint64_t                 headerLibId = 0;
-            ZDynamicResourceLibrary* library     = nullptr;
-        };
-
-        void __cdecl DoMount(void* context)
-        {
-            auto* mount = static_cast<MountContext*>(context);
-
-            // Delayed entities, zero instances: this is a mount, not a spawn.
-            // The scene context builds the level; this only makes the level's
-            // packages resident so the scene context has something to build
-            // from.
-            mount->library = new ZDynamicResourceLibrary(
-                ZRuntimeResourceID(mount->headerLibId), true, 0);
-        }
+        // Nothing mounts a resource library any more - see Begin. The mount
+        // that used to live here faulted on every run and left the engine's
+        // resource system in a state its own teardown could not walk.
 
         struct PollContext
         {
@@ -831,31 +817,34 @@ namespace Coop::Game
         // that never needed it. It is gone from the primary path.
         g_stage = Stage::Ready;
 
-        // The mount still has one job: the manual fallback (for the case the
-        // engine ignores the handover) resolves its resources out of it. So it
-        // is started here in the background, non-fatally - if it faults or
-        // never finishes, the fallback simply becomes unavailable and the
-        // primary load is untouched. Given Commit now calls the engine's own
-        // loader, the fallback is a rarely-reached last resort.
-        Diag::Log("scene: %s ready to commit; mounting libraries in the background "
-                  "for the fallback (%016llX)", entry->scene, entry->headerLib);
+        // Nothing is mounted here, and that is the point.
+        //
+        // This used to kick off a background mount of the level's resource
+        // library to feed the manual fallback. It faulted every single time it
+        // ran - in every session, on every machine it has been tried on - and
+        // the fallback was therefore marked unavailable every single time, so
+        // the call bought nothing at all. What it cost took longer to see: it
+        // is the one engine call the mod makes when a jump is armed, it faults
+        // inside the engine's resource system, and the teardown that follows
+        // has to walk exactly that system. Arming a jump and then returning to
+        // the main menu hung the game thread permanently - measured at over
+        // three minutes without a single frame while the process stayed alive -
+        // and an armed jump was the only difference between that and a menu
+        // return that worked.
+        //
+        // SEH caught the fault every time, which is what made it look harmless.
+        // Catching a fault keeps the mod running; it does not put back whatever
+        // the engine was in the middle of when it faulted.
+        //
+        // The primary path never needed it: SwitchToScene resolves the level's
+        // resources itself, on its own threads, behind a loading screen. So the
+        // mount is gone, and the fallback stays unavailable - which is exactly
+        // what it was in practice anyway, only now without taking the game down
+        // with it.
+        g_pending->fallbackBlocked = true;
 
-        MountContext mount;
-        mount.headerLibId = entry->headerLib;
-
-        if (RunGuarded(&DoMount, &mount) && mount.library)
-        {
-            g_pending->library = mount.library;
-        }
-        else
-        {
-            FreeMount(mount.library, "the failed background mount");
-
-            Diag::Log("scene: the background mount faulted - the fallback will be "
-                      "unavailable, the primary load is unaffected");
-
-            g_pending->fallbackBlocked = true;
-        }
+        Diag::Log("scene: %s ready to commit - nothing pre-mounted, the engine "
+                  "resolves the level itself", entry->scene);
 
         return true;
     }
