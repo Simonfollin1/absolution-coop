@@ -256,9 +256,14 @@ private:
     // patience from the slowest one it has actually seen here. On a fast machine
     // it stays tight; on a slow one it stretches to fit, without anyone being
     // asked what kind of disk they have.
-    float m_loadingFor      = 0.f;
-    float m_longestLoadSeen = 0.f;
-    bool  m_wasLoading      = false;
+    // Measured by the watchdog, not the frame update, and the reason matters:
+    // on a slow drive the game thread does not run *at all* while a level
+    // loads. One measured load took 132 seconds without completing a single
+    // frame, so anything counting deltaSeconds saw five seconds of it, and the
+    // engine's loading flag could not be sampled either - nobody was there to
+    // sample it. The length of a stall the watchdog observes IS how long this
+    // machine takes to load.
+    std::atomic<uint32_t> m_longestStallMs{ 0 };
 
     // The same measurement, in milliseconds, for the watchdog thread.
     std::atomic<uint32_t> m_stallThresholdMs{ 15000 };
