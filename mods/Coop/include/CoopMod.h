@@ -235,6 +235,12 @@ private:
     std::atomic<uint32_t> m_framePhase{ 0 };
     std::atomic<uint64_t> m_frameCount{ 0 };
 
+    // Whether the engine said it was loading, stamped by the game thread and
+    // read by the watchdog. Sampled rather than read across threads on purpose:
+    // if the game thread stops, the last value is the one that matters - was it
+    // waiting on the disk when it went quiet, or was it idle and simply hung?
+    std::atomic<bool> m_engineLoading{ false };
+
     char m_hostAddress[64] = "127.0.0.1:47474";
     char m_playerName[32]  = "Agent";
     char m_password[32]    = "";

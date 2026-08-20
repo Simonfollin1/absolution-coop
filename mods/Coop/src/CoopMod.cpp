@@ -311,15 +311,21 @@ void CoopMod::WatchdogMain()
             {
                 reported = false;
 
-                Diag::Log("watchdog: the game thread is running again");
+                Diag::Log("watchdog: the game thread is running again after %llu ms",
+                          static_cast<unsigned long long>(now - lastMovedAt));
             }
 
             continue;
         }
 
-        // Five seconds without finishing a frame is a freeze rather than a slow
-        // load: even a level load hands the loop back between frames.
-        if (!reported && now - lastMovedAt >= 5000)
+        // What counts as a stall depends on the machine this runs on. A level
+        // load off a mechanical drive takes forty to sixty seconds on the
+        // hardware this is tested against, and the game thread goes quiet in
+        // long stretches while it waits on the disk - five seconds cried wolf
+        // there constantly. Fifteen lets an ordinary disk wait pass in
+        // silence, and the engine's own loading state is reported next to it,
+        // so slow storage is never written down as a hang.
+        if (!reported && now - lastMovedAt >= 15000)
         {
             reported = true;
 
@@ -328,10 +334,16 @@ void CoopMod::WatchdogMain()
             const char* const name =
                 phase < std::size(kFramePhases) ? kFramePhases[phase] : "unknown";
 
+            const bool loading = m_engineLoading.load(std::memory_order_relaxed);
+
             Diag::Log("watchdog: the game thread has not finished a frame for %llu ms "
-                      "- it is stuck in \"%s\" (phase %u), which is the work that did "
-                      "not return",
-                      static_cast<unsigned long long>(now - lastMovedAt), name, phase);
+                      "- last seen in \"%s\" (phase %u). The engine %s when it went "
+                      "quiet, so this is %s.",
+                      static_cast<unsigned long long>(now - lastMovedAt), name, phase,
+                      loading ? "was loading" : "was NOT loading",
+                      loading ? "most likely the disk rather than a hang - leave it "
+                                "running and it should come back"
+                              : "a real stall");
         }
     }
 }
@@ -879,7 +891,11 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
     // is still showing a loading screen. Committing on the first frame it reads
     // clear means loading into a level that is still coming apart, so the
     // reading has to hold still, and the engine has to be done loading, first.
-    if (Game::SceneSync::LevelTornDown() && !GameOffsets::IsLoading())
+    const bool engineLoading = GameOffsets::IsLoading();
+
+    m_engineLoading.store(engineLoading, std::memory_order_relaxed);
+
+    if (Game::SceneSync::LevelTornDown() && !engineLoading)
     {
         m_tornDownFor += deltaSeconds;
     }
@@ -918,7 +934,12 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
 
         std::string error;
 
-        m_sceneLoadWatch     = 30.f;
+        // Ninety seconds, not thirty. A level load off a mechanical drive is
+        // measured at forty to sixty seconds on the hardware this is tested
+        // against, and giving up mid-load tears down a level that was going to
+        // arrive. The engine's loading flag holds the countdown below as well,
+        // but this is the number that has to survive a slow disk on its own.
+        m_sceneLoadWatch     = 90.f;
         m_sceneLoadPlayerWas = LevelManager ? LevelManager->GetHitman().GetRawPointer() : nullptr;
 
         if (!Game::SceneSync::Commit(error))
@@ -976,9 +997,9 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
             // however long it takes - the countdown holds rather than expiring
             // into a teardown of a level that is half built, and the ten
             // seconds are the grace left once the loading screen goes away.
-            if (m_sceneLoadWatch < 10.f)
+            if (m_sceneLoadWatch < 20.f)
             {
-                m_sceneLoadWatch = 10.f;
+                m_sceneLoadWatch = 20.f;
             }
         }
         else
@@ -1004,7 +1025,7 @@ void CoopMod::OnFrameUpdate(const SGameUpdateEvent& updateEvent)
 
                 if (Game::SceneSync::TryFallback(fallbackError))
                 {
-                    m_sceneLoadWatch = 30.f;
+                    m_sceneLoadWatch = 90.f;
 
                     AddLogLine("The engine ignored the handover - ran its pipeline "
                                "by hand instead, watching again");
