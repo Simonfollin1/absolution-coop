@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <new>
 
@@ -216,8 +217,12 @@ namespace Coop::Game
             // SwitchToScene, on the level manager.
             using PrepareFn = void(__thiscall*)(void*);
 
-            reinterpret_cast<PrepareFn>(BaseAddress + kPrepareTransitionRva)(
-                call->levelManager);
+            {
+                DIAG_STAGE("SwitchToScene 1/2: prepare-latch RVA 0x1A90F0 on LevelManager");
+
+                reinterpret_cast<PrepareFn>(BaseAddress + kPrepareTransitionRva)(
+                    call->levelManager);
+            }
 
             // SwitchToScene copies all ten arguments into the level manager's
             // transition-parameter block (gameMode -> +0x0C, the token -> +0x28,
@@ -243,6 +248,8 @@ namespace Coop::Game
             using SwitchFn = void(__thiscall*)(void*, int, const void*, int, const void*,
                                                unsigned, unsigned, unsigned, unsigned,
                                                unsigned, unsigned);
+
+            DIAG_STAGE("SwitchToScene 2/2: ZLevelManager::SwitchToScene RVA 0x211870");
 
             reinterpret_cast<SwitchFn>(BaseAddress + kSwitchToSceneRva)(
                 call->levelManager,
@@ -481,6 +488,12 @@ namespace Coop::Game
         void __cdecl DoFallbackStep(void* raw)
         {
             auto* call = static_cast<FallbackStepContext*>(raw);
+
+            char label[96];
+            std::snprintf(label, sizeof(label),
+                          "fallback step %d calling vtable fn %p on ctx %p",
+                          call->step, call->function, call->context);
+            DIAG_STAGE(label);
 
             switch (call->step)
             {
