@@ -412,8 +412,29 @@ is the gate, and the notes on it are in `RE-NOTES.md` §3.3. This is the
 difference between co-op that reads as a game and co-op that reads as a debug
 overlay.
 
-**7. Everything on GOG.** Not one line has been run on it. The god-mode backstop
-is explicitly Steam-only and says so.
+**7. Everything on GOG.** It does not run there, and now says so instead of
+crashing. The first GOG report (2026-10-31, against No Filter, same loader):
+access violation in `HMA.exe` at offset `0x389F1E` before the launcher, with
+every mod disabled. That is fourteen bytes into `0x389F10`, the Steam RVA the
+SDK calls for its memory manager - the SDK we build against has Steam's
+addresses and no others. The loader now reads the executable's `SizeOfImage`
+and loads the SDK only into the Steam build; anywhere else the game starts
+unmodded with a message (`.github/scripts/patch-sdk-startup.ps1`).
+
+Real support is three pieces of work, in this order:
+
+- *Move to the rewritten SDK.* Upstream gained GOG support in September 2026
+  (`ac49792` onward) by finding engine functions by byte pattern, in a rewrite
+  that also changed the mod interface (`IModInterface`, detour macros) and the
+  header layout. The build is pinned to `5c9cb22`, the last commit before it;
+  moving the pin means porting the mod and rewriting or dropping every patch
+  script, each of which asserts the old source.
+- *The mod's own addresses.* Everything reached through `BaseAddress` here -
+  `SwitchToScene`, the prepare-transition call, the god-mode backstop - is a
+  Steam RVA. Each needs a pattern or a GOG value, and that needs a GOG
+  `HMA.exe` to derive them from.
+- *Someone to run it.* The `GOG_TABLE` in `GameOffsets.cpp` is still unverified,
+  and its `SizeOfImage` (35799040) is from LiveSplit, not from a binary.
 
 **8. Netcode robustness past two players.** Three known weaknesses, none of
 which matters for a two-player session on a decent connection, all of which

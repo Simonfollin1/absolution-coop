@@ -180,6 +180,26 @@ Edit-Source -Path "$SdkRoot/HitmanAbsolutionSDK/src/Renderer/DirectXRenderer.cpp
 # DLL_PROCESS_DETACH gets a smaller correction on the way past: FreeLibrary is
 # on the same forbidden list, and lpReserved being non-null means the process is
 # terminating, where unloading is both pointless and a way to crash on exit.
+#
+# And one thing the loader never did at all: look at what it is loading into.
+#
+# The SDK this is built against calls and hooks the engine at fixed addresses,
+# and those addresses are the Steam executable's. The GOG release is the same
+# game version with a different layout, so there the SDK's first engine call -
+# its memory manager, RVA 0x389F10 - lands in the middle of something else.
+# The report that found it: access violation in HMA.exe at offset 0x389F1E,
+# before the launcher, with every mod disabled, and no mod log because no mod
+# ever ran. Nothing a player can do about that except remove the loader.
+#
+# So the loader checks the executable's SizeOfImage - the same discriminator
+# common/src/Memory/GameOffsets.cpp uses - and loads the SDK only into the
+# build it was written for. Anywhere else it loads the real dinput8 and nothing
+# more, so the game runs exactly as it would unmodded, and says why in a
+# message box. An allowlist rather than "not GOG": on any layout but the one
+# the addresses came from, the SDK is a crash, whatever that layout is called.
+#
+# The here-strings below are double-quoted, so PowerShell expands dollar signs
+# and backticks in them. The C++ contains neither; keep it that way.
 # ---------------------------------------------------------------------------
 
 $proxyFrom = @(
@@ -233,10 +253,86 @@ $proxyTo = @(
 @"
 static DirectInput8Create_t originalDirectInput8Create = nullptr;
 static INIT_ONCE loadOnce = INIT_ONCE_STATIC_INIT;
+
+// SizeOfImage from the PE header of the two releases of 1.0.447.0. The SDK's
+// engine addresses are the Steam executable's, and only that one is loaded
+// into. The GOG value is here so the message can name it.
+static const DWORD STEAM_IMAGE_SIZE = 36777984;
+static const DWORD GOG_IMAGE_SIZE = 35799040;
+
+static char unsupportedMessage[768] = { 0 };
 "@,
 @"
-// Loads the real dinput8 and the SDK. Runs exactly once, on whichever of the
-// two callers below reaches it first - never from inside DllMain.
+// SizeOfImage of the executable this DLL was loaded into, read from the
+// headers the loader has already mapped. Zero if they do not look like a PE.
+static DWORD GetGameImageSize()
+{
+    const BYTE* base = reinterpret_cast<const BYTE*>(GetModuleHandleA(nullptr));
+
+    if (!base)
+    {
+        return 0;
+    }
+
+    const IMAGE_DOS_HEADER* dosHeader = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+
+    if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE || dosHeader->e_lfanew <= 0)
+    {
+        return 0;
+    }
+
+    const IMAGE_NT_HEADERS* ntHeaders = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dosHeader->e_lfanew);
+
+    if (ntHeaders->Signature != IMAGE_NT_SIGNATURE)
+    {
+        return 0;
+    }
+
+    return ntHeaders->OptionalHeader.SizeOfImage;
+}
+
+// On its own thread, so the game is never held up waiting for somebody to
+// press OK: DirectInput8Create below waits for LoadEverything, not for this.
+static DWORD WINAPI UnsupportedBuildThread(LPVOID)
+{
+    MessageBoxA(nullptr, unsupportedMessage, "Hitman Absolution SDK loader", MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST);
+
+    return 0;
+}
+
+static void ReportUnsupportedBuild(const DWORD imageSize)
+{
+    char build[96] = { 0 };
+
+    if (imageSize == GOG_IMAGE_SIZE)
+    {
+        strcpy_s(build, sizeof(build), "the GOG release");
+    }
+    else
+    {
+        wsprintfA(build, "a build the loader does not recognise (image size %lu)", imageSize);
+    }
+
+    wsprintfA(unsupportedMessage,
+        "The mods in this folder were not loaded.\n\n"
+        "They are built for the Steam release of Hitman: Absolution 1.0.447.0, "
+        "and this HMA.exe is %s. Loading them into any other build crashes the "
+        "game while it starts, so the loader has left the game untouched.\n\n"
+        "The game will run normally, without mods. To stop seeing this message, "
+        "remove dinput8.dll from the folder HMA.exe is in.",
+        build);
+
+    HANDLE thread = CreateThread(nullptr, 0, UnsupportedBuildThread, nullptr, 0, nullptr);
+
+    if (thread)
+    {
+        CloseHandle(thread);
+    }
+}
+
+// Loads the real dinput8 and, into the one build it is written for, the SDK.
+// Runs exactly once, on whichever of the two callers below reaches it first -
+// never from inside DllMain.
 static BOOL CALLBACK LoadEverything(PINIT_ONCE, PVOID, PVOID*)
 {
     char dinput8Path[MAX_PATH] = { 0 };
@@ -251,7 +347,18 @@ static BOOL CALLBACK LoadEverything(PINIT_ONCE, PVOID, PVOID*)
         originalDirectInput8Create = reinterpret_cast<DirectInput8Create_t>(GetProcAddress(originalDirectInput, "DirectInput8Create"));
     }
 
-    sdk = LoadLibraryA("HitmanAbsolutionSDK");
+    // The real dinput8 is loaded whatever happens next: the game needs it,
+    // modded or not. The SDK goes only where its addresses are true.
+    const DWORD imageSize = GetGameImageSize();
+
+    if (imageSize == STEAM_IMAGE_SIZE)
+    {
+        sdk = LoadLibraryA("HitmanAbsolutionSDK");
+    }
+    else
+    {
+        ReportUnsupportedBuild(imageSize);
+    }
 
     return TRUE;
 }

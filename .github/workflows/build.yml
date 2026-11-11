@@ -86,12 +86,33 @@ jobs:
         with:
           path: mod
 
+      # Pinned, not master. In September 2026 the SDK was rewritten upstream:
+      # new mod interface, new header layout, engine addresses found by
+      # pattern instead of written down. Everything here - the mod, and the
+      # patches below, which assert the exact source they edit - is written
+      # against the SDK as it was before that. Tracking master would not
+      # build at all.
+      #
+      # The pinned SDK knows the Steam executable's addresses and nothing
+      # else, which is why the loader patch refuses to load it into any other
+      # build. Moving this pin past the rewrite is what real GOG support
+      # takes; see docs/PROJECT.md.
       - name: Clone HitmanAbsolutionSDK
-        run: git clone --depth 1 --recurse-submodules https://github.com/pavledev/HitmanAbsolutionSDK.git sdk
+        shell: pwsh
+        run: |
+          $pin = "5c9cb22caba34d28cdfa6785e1abbe03ea9c0a60"
 
-      # The clone tracks master, so "the SDK" is a moving target. Recording
-      # which commit these DLLs were built against is what makes a bug report
-      # about them answerable.
+          git clone https://github.com/pavledev/HitmanAbsolutionSDK.git sdk
+          if ($LASTEXITCODE -ne 0) { throw "could not clone the SDK" }
+
+          git -C sdk checkout --detach $pin
+          if ($LASTEXITCODE -ne 0) { throw "the pinned SDK commit $pin is not in the clone" }
+
+          git -C sdk submodule update --init --recursive
+          if ($LASTEXITCODE -ne 0) { throw "could not fetch the SDK's submodules" }
+
+      # Recording which commit these DLLs were built against is what makes a
+      # bug report about them answerable.
       - name: Record SDK revision
         shell: pwsh
         run: |
@@ -301,7 +322,9 @@ jobs:
             next to it.
 
             - Steam: right-click the game, Manage, Browse local files
-            - GOG: `...\Hitman Absolution\retail\`
+
+            Steam only for now. On the GOG build the loader notices, leaves
+            the game untouched, and says so instead of crashing.
 
             Start the game. `~` opens the SDK panel, `F6` opens co-op.
 

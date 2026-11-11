@@ -32,8 +32,11 @@ Grab the latest [release](../../releases), extract it into the folder
 Keys only work while the SDK's interface is closed, because it switches the
 game's input off whenever it holds the keyboard.
 
-Needs 1.0.447.0 and the 32-bit Visual C++ 2015-2022 redistributable. Don't use
-it in Contracts.
+Needs the **Steam** release of 1.0.447.0 and the 32-bit Visual C++ 2015-2022
+redistributable. Don't use it in Contracts.
+
+The GOG release isn't supported yet. The loader recognises it, leaves the game
+alone and tells you so, rather than crashing on start-up the way it used to.
 
 ## Playing together
 
